@@ -2,7 +2,7 @@
 name: Bug Report for Feren OS Classic -> Feren OS
 about: Create a bug report for the Feren OS Classic -> Feren OS update option
 title: ''
-labels: ''
+labels: Feren OS Classic to Feren OS
 assignees: ''
 
 ---

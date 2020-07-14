@@ -2,7 +2,7 @@
 name: Bug Report for Feren OS Classic -> Linux Mint 20
 about: Create a bug report for the Feren OS Classic -> Linux Mint 20 update option
 title: ''
-labels: ''
+labels: Feren OS Classic to Linux Mint 20
 assignees: ''
 
 ---

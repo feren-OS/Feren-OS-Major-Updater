@@ -2,7 +2,7 @@
 name: Bug Report for Standard Update
 about: Create a bug report for the standard Feren OS -> Feren OS update path
 title: ''
-labels: ''
+labels: Standard Update
 assignees: ''
 
 ---

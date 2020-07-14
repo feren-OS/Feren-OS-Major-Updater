@@ -1,0 +1,36 @@
+#! /bin/bash
+# Run oem-config on the first boot after shipping to the end user.
+
+CODE=0
+sleep 0.1
+#Run the DM
+/usr/bin/oem-config-dm vt7 :0 oemconfiguser || CODE=$?
+#If the setup completed successfully, commence final cleanup, otherwise shut the OS down
+if [ -f /tmp/feren-oem-setup-complete ]; then
+    #Show Plymouth once more as the boot process is now continuing and finishing, technically
+    plymouthd >/dev/null 2>&1
+    plymouth --show-splash >/dev/null 2>&1
+    #Kill off any remaining processes running as oemconfiguser and then delete them entirely from the system
+    if getent passwd oemconfiguser >/dev/null; then
+        killall --user oemconfiguser -9 >/dev/null 2>&1 || true
+        userdel --force --remove oemconfiguser >/dev/null 2>&1 || true
+        delgroup oemconfiguser >/dev/null 2>&1 || true
+        rm -rf /oemconfiguser >/dev/null 2>&1 || true
+    fi
+    #Undo our SystemD tweak to make OEM Config run on boot and tell the system to finish off the standard boot process by launching graphical.target manually
+    /bin/systemctl set-default graphical.target >/dev/null 2>&1 || true
+    /bin/systemctl --no-block isolate graphical.target >/dev/null 2>&1 || true
+    /bin/systemctl start graphical.target >/dev/null 2>&1 &
+    #While that's working in the background and taking the user to the login screen, or their desktop, let's do some final cleanup, starting with resetting sources.list in case the user booted from an installation that failed at a point of installation when CDROM is the only repository on the file
+    /usr/bin/reset-feren-ppas
+    #Refresh the package repositories if possible
+    /usr/bin/apt update
+    #Final cleanup - disable the remaining OEM Config services and delete them
+    /bin/systemctl disable oem-config.service >/dev/null 2>&1 || true
+    /bin/systemctl disable oem-config.target >/dev/null 2>&1 || true
+    rm -f /lib/systemd/system/oem-config.* >/dev/null 2>&1 || true
+else
+    poweroff
+    sleep 3600
+    exit 1
+fi

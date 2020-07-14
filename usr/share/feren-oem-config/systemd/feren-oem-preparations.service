@@ -1,0 +1,15 @@
+[Unit]
+Description=Feren OS OEM Pre-OEM Cleanup
+ConditionFileIsExecutable=/usr/bin/feren-oem-prepremove
+RequiresMountsFor=/ /bin /dev /etc /home /lib /opt /proc /run /sbin /usr /var
+After=plymouth-poweroff.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+ExecStop=/usr/bin/feren-oem-prepremove
+RemainAfterExit=true
+TimeoutSec=infinity
+
+[Install]
+WantedBy=multi-user.target

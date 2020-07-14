@@ -1,0 +1,61 @@
+#!/bin/bash
+
+if [ "$1" = "--check" ]; then
+    osbase="$(cat /etc/feren-os-base)"
+    if [ "$osbase" = "xenial" ] || [ "$osbase" = "bionic" ]; then
+        exit 0
+    else
+        exit 1
+    fi
+fi
+
+if [ -f /etc/feren-majorupdate-underway ]; then
+    #Skip checks, there's an update underway
+    echo "Found an in-progress update, checking what update it is..."
+    if [ "$(cat /etc/feren-majorupdate-underway)" = "standard" ]; then
+        echo "Standard Feren OS major update detected, resuming..."
+        /usr/lib/feren-majorupdate/gui.py "bionic" "amd64" "inprogress"
+        exit $?
+    elif [ "$(cat /etc/feren-majorupdate-underway)" = "gotomint" ]; then
+        echo "Ongoing transition to Linux Mint 20.0 detected, resuming..."
+        /usr/lib/feren-majorupdate/gui.py "bionic" "amd64" "inprogressmint"
+        exit $?
+    else
+        echo "I have no idea. Continuing with the standard updater..."
+    fi
+fi
+
+echo "Checking your current release of Feren OS..."
+osbase="$(cat /etc/feren-os-base)"
+
+if [ "$osbase" = "xenial" ]; then
+    echo "Identified Feren OS on Ubuntu 16.04. This can be updated to Ubuntu 20.04."
+    /usr/lib/feren-majorupdate/gui.py "xenial"
+    exit $?
+elif [ "$osbase" = "bionic" ]; then
+    echo "Identified Feren OS on Ubuntu 18.04. This can be updated to Ubuntu 20.04."
+    echo "Checking if your computer is compatible with Ubuntu 20.04: 32-Bit check"
+    if [ "$(uname -m)" = "i686" ]; then
+        echo "32-Bit hardware has been detected. The update cannot continue. Showing the user an explanation now..."
+        /usr/lib/feren-majorupdate/gui.py "bionic" "i686"
+        exit $?
+    else
+        echo "32-Bit hardware was not detected. Continuing..."
+        echo "Checking if your computer is compatible with Ubuntu 20.04: Checking for Feren OS Classic"
+        if [ -f /usr/bin/cinnamon ] && [ ! -f /usr/bin/plasmashell ]; then
+            echo "Feren OS Classic detected. Prompting the user now to choose their next OS since Feren OS Classic is no longer available..."
+            /usr/lib/feren-majorupdate/gui.py "bionic" "amd64" "classic"
+            exit $?
+        fi
+        echo "Feren OS Classic was not detected.
+All checks have passed. Launching the Major Updater now..."
+        /usr/lib/feren-majorupdate/gui.py "bionic" "amd64"
+        exit $?
+    fi
+elif [ "$osbase" = "focal" ]; then
+    echo "Your Feren OS base is up to date."
+    exit 0
+fi
+
+echo "Your current Feren OS is not supported by this tool."
+exit 1

@@ -1,0 +1,846 @@
+#!/bin/bash
+
+#Add the OEM Config environment user ready for the next startup
+groupadd -f --gid 999 -o oemconfiguser
+adduser --disabled-password --gecos "" oemconfiguser --home /oemconfiguser --uid 999 --gid 999
+#Completely remove the OEM Configs User used to initiate shipping preparation
+if [ -d /home/oem ]; then
+    killall --user oem -9
+    deluser oem
+    rm -rf /home/oem
+fi
+#Remove oemconfiguser's Desktop Icons
+rm -rf /oemconfiguser/Desktop
+mkdir /oemconfiguser/Desktop
+#Pre-emptively make .dbus folder and make it owned by the user to prevent plasmashell launching issues within the environment
+mkdir /oemconfiguser/.dbus
+chown -hR oemconfiguser:oemconfiguser /oemconfiguser
+
+#Remove autologin if applicable
+sed -i '/^autologin-user=/d' /etc/lightdm/lightdm.conf
+
+#Add restrictions
+
+#We don't really care about it complaining about directories already existing since, well, no one will see this in any logs anyway, most likely.
+mkdir /etc/dconf
+mkdir /etc/dconf/db
+mkdir /etc/dconf/db/local.d
+mkdir /etc/dconf/db/local.d/locks
+#Add DCONF Locking to some settings that need locking to prevent unintended actions
+echo "# prevent changes to misc. settings
+/org/gnome/desktop/wm/preferences/num-workspaces
+/org/gnome/desktop/wm/preferences/button-layout
+/org/cinnamon/muffin/button-layout
+/org/onboard/lockdown/disable-preferences" > /etc/dconf/db/local.d/locks/00_oemsetup-locks
+mkdir /etc/dconf/profile
+echo "user-db: user
+system-db:local
+" > /etc/dconf/profile/user
+#Write the changes to dconf
+dconf update
+#Install the custom dconf defaults to the OS for OEM Setup User to use
+cp -f /usr/share/feren-oem-config/dconf-configs/oem-config.gschema.override /usr/share/glib-2.0/schemas/oem-config.gschema.override
+glib-compile-schemas /usr/share/glib-2.0/schemas
+
+if [ -f /usr/bin/plasmashell ]; then
+    #Plasma Restrictions + Setup Round 1
+    #Backup the current kdeglobals file if there is one
+    if [ -f /etc/xdg/kdeglobals ]; then
+        cp -f /etc/xdg/kdeglobals /etc/feren-kdeglobals-backup
+    fi
+    #Backup the current kded5rc file if there is one
+    if [ -f /etc/xdg/kded5rc ]; then
+        cp -f /etc/xdg/kded5rc /etc/feren-kded5rc-backup
+    fi
+    #Backup the current khotkeysrc file if there is one
+    if [ -f /etc/xdg/khotkeysrc ]; then
+        cp -f /etc/xdg/khotkeysrc /etc/feren-khotkeysrc-backup
+    fi
+    #Backup the current kglobalshortcutsrc file if there is one
+    if [ -f /etc/xdg/kglobalshortcutsrc ]; then
+        cp -f /etc/xdg/kglobalshortcutsrc /etc/feren-kglobalshortcutsrc-backup
+    fi
+    #Backup the root kdeglobals file if there is one
+    if [ -f /root/.config/kdeglobals ]; then
+        cp -f /root/.config/kdeglobals /root/.config/kdeglobals-backup
+    fi
+    #Make oemconfiguser's .config folder if there isn't already one pre-made
+    if [ ! -d /oemconfiguser/.config ]; then
+        mkdir /oemconfiguser/.config
+    fi
+    #Push pre-made Plasma config files to the oemconfiguser
+    cp -f /usr/share/feren-oem-config/plasma-layout/plasma-org.kde.plasma.desktop-appletsrc /oemconfiguser/.config/plasma-org.kde.plasma.desktop-appletsrc
+    #Make oemconfiguser own them
+    chown -h oemconfiguser:oemconfiguser /oemconfiguser/.config/plasma-org.kde.plasma.desktop-appletsrc
+    #Once again... we're specifying a kactivitymanagerdrc file pre-made because otherwise the disabled desktop icons (to slightly speed up Plasmashell load times) tweak has a near-impossible chance of actually taking effect
+    cp -f /usr/share/feren-oem-config/plasma-layout/kactivitymanagerdrc /oemconfiguser/.config/kactivitymanagerdrc
+    chown -h oemconfiguser:oemconfiguser /oemconfiguser/.config/kactivitymanagerdrc
+    #Force the Feren OS colour scheme onto oemconfiguser rather than letting them use the Breeze colour scheme
+    /bin/echo '[ColorEffects:Disabled]
+ChangeSelectionColor=
+Color=56,56,56
+ColorAmount=0
+ColorEffect=0
+ContrastAmount=0.65
+ContrastEffect=1
+Enable=
+IntensityAmount=0.1
+IntensityEffect=2
+
+[ColorEffects:Inactive]
+ChangeSelectionColor=true
+Color=112,111,110
+ColorAmount=0.025
+ColorEffect=2
+ContrastAmount=0.1
+ContrastEffect=2
+Enable=false
+IntensityAmount=0
+IntensityEffect=0
+
+[Colors:Button]
+BackgroundAlternate=189,195,199
+BackgroundNormal=252,253,253
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Complementary]
+BackgroundAlternate=59,64,69
+BackgroundNormal=49,54,59
+DecorationFocus=30,146,255
+DecorationHover=61,174,230
+ForegroundActive=147,206,233
+ForegroundInactive=175,176,179
+ForegroundLink=61,174,230
+ForegroundNegative=231,76,60
+ForegroundNeutral=253,188,75
+ForegroundNormal=241,240,239
+ForegroundPositive=46,204,113
+ForegroundVisited=61,174,230
+
+[Colors:Selection]
+BackgroundAlternate=29,153,243
+BackgroundNormal=0,106,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=252,252,252
+ForegroundInactive=255,255,255
+ForegroundLink=253,188,75
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=255,255,255
+ForegroundPositive=0,170,0
+ForegroundVisited=189,195,199
+
+[Colors:Tooltip]
+BackgroundAlternate=77,77,77
+BackgroundNormal=251,251,251
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:View]
+BackgroundAlternate=241,240,239
+BackgroundNormal=255,255,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Window]
+BackgroundAlternate=189,195,199
+BackgroundNormal=229,229,229
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[WM]
+activeBackground=229,229,229
+activeBlend=238,238,238
+activeForeground=0,0,0
+inactiveBackground=229,229,229
+inactiveBlend=238,238,238
+inactiveForeground=73,73,73' > /oemconfiguser/.config/kdeglobals
+    chown -h oemconfiguser:oemconfiguser /oemconfiguser/.config/kdeglobals
+    #Force windows to be centered in this environment for... visual niceity, I guess. (shrug)
+    /bin/echo '[1]
+Description=Force Centered Windows (OEM Config Shell)
+ignoregeometry[$d]
+ignoregeometryrule[$d]
+placement=Centered
+placementrule=2
+wmclass=
+wmclasscomplete=false
+wmclassmatch=0
+
+[2]
+Description[$d]
+noborder[$d]
+noborderrule[$d]
+wmclass[$d]
+wmclasscomplete[$d]
+wmclassmatch[$d]
+
+[3]
+Description[$d]
+closeable[$d]
+closeablerule[$d]
+wmclass[$d]
+wmclasscomplete[$d]
+wmclassmatch[$d]
+
+[4]
+Description[$d]
+decocolor[$d]
+decocolorrule[$d]
+wmclass[$d]
+wmclasscomplete[$d]
+wmclassmatch[$d]' > /oemconfiguser/.config/kwinrulesrc
+    chown -h oemconfiguser:oemconfiguser /oemconfiguser/.config/kwinrulesrc
+    #Add restrictions to the kdeglobals
+    /bin/echo '[KDE Action Restrictions][$i]
+action/kwin_rmb=false
+plasma/allow_configure_when_locked=false
+plasma/plasmashell/unlockedDesktop=false
+run_command=false
+action/lock_screen=false
+editable_desktop_icons=false
+action/switch_user=false
+action/start_new_session=false
+plasma/containment_actions=false
+action/configdesktop=false
+plasma-desktop/add_activities=false
+logout=false
+shell_access=false
+
+[Theme][$i]
+name=feren-alt
+
+[org.kde.kdecoration2][$i]
+ButtonsOnLeft=M
+ButtonsOnRight=A
+
+[Desktops][$i]
+Number=1
+
+[ColorEffects:Disabled]
+ChangeSelectionColor=
+Color=56,56,56
+ColorAmount=0
+ColorEffect=0
+ContrastAmount=0.65
+ContrastEffect=1
+Enable=
+IntensityAmount=0.1
+IntensityEffect=2
+
+[ColorEffects:Inactive]
+ChangeSelectionColor=true
+Color=112,111,110
+ColorAmount=0.025
+ColorEffect=2
+ContrastAmount=0.1
+ContrastEffect=2
+Enable=false
+IntensityAmount=0
+IntensityEffect=0
+
+[Colors:Button]
+BackgroundAlternate=189,195,199
+BackgroundNormal=252,253,253
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Complementary]
+BackgroundAlternate=59,64,69
+BackgroundNormal=49,54,59
+DecorationFocus=30,146,255
+DecorationHover=61,174,230
+ForegroundActive=147,206,233
+ForegroundInactive=175,176,179
+ForegroundLink=61,174,230
+ForegroundNegative=231,76,60
+ForegroundNeutral=253,188,75
+ForegroundNormal=241,240,239
+ForegroundPositive=46,204,113
+ForegroundVisited=61,174,230
+
+[Colors:Selection]
+BackgroundAlternate=29,153,243
+BackgroundNormal=0,106,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=252,252,252
+ForegroundInactive=255,255,255
+ForegroundLink=253,188,75
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=255,255,255
+ForegroundPositive=0,170,0
+ForegroundVisited=189,195,199
+
+[Colors:Tooltip]
+BackgroundAlternate=77,77,77
+BackgroundNormal=251,251,251
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:View]
+BackgroundAlternate=241,240,239
+BackgroundNormal=255,255,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Window]
+BackgroundAlternate=189,195,199
+BackgroundNormal=229,229,229
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[General][$i]
+ColorScheme=Feren
+
+[KDE][$i]
+LookAndFeelPackage=org.feren.default
+GlobalThemePackage=org.feren.default
+contrast=4
+widgetStyle=Breeze
+
+[WM][$i]
+activeBackground=229,229,229
+activeBlend=238,238,238
+activeForeground=0,0,0
+inactiveBackground=229,229,229
+inactiveBlend=238,238,238
+inactiveForeground=73,73,73' > /etc/xdg/kdeglobals
+    #Just in case, also make Root use the Feren OS colour scheme by default instead of Breeze
+    /bin/echo '[ColorEffects:Disabled]
+ChangeSelectionColor=
+Color=56,56,56
+ColorAmount=0
+ColorEffect=0
+ContrastAmount=0.65
+ContrastEffect=1
+Enable=
+IntensityAmount=0.1
+IntensityEffect=2
+
+[ColorEffects:Inactive]
+ChangeSelectionColor=true
+Color=112,111,110
+ColorAmount=0.025
+ColorEffect=2
+ContrastAmount=0.1
+ContrastEffect=2
+Enable=false
+IntensityAmount=0
+IntensityEffect=0
+
+[Colors:Button]
+BackgroundAlternate=189,195,199
+BackgroundNormal=252,253,253
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Complementary]
+BackgroundAlternate=59,64,69
+BackgroundNormal=49,54,59
+DecorationFocus=30,146,255
+DecorationHover=61,174,230
+ForegroundActive=147,206,233
+ForegroundInactive=175,176,179
+ForegroundLink=61,174,230
+ForegroundNegative=231,76,60
+ForegroundNeutral=253,188,75
+ForegroundNormal=241,240,239
+ForegroundPositive=46,204,113
+ForegroundVisited=61,174,230
+
+[Colors:Selection]
+BackgroundAlternate=29,153,243
+BackgroundNormal=0,106,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=252,252,252
+ForegroundInactive=255,255,255
+ForegroundLink=253,188,75
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=255,255,255
+ForegroundPositive=0,170,0
+ForegroundVisited=189,195,199
+
+[Colors:Tooltip]
+BackgroundAlternate=77,77,77
+BackgroundNormal=251,251,251
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:View]
+BackgroundAlternate=241,240,239
+BackgroundNormal=255,255,255
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[Colors:Window]
+BackgroundAlternate=189,195,199
+BackgroundNormal=229,229,229
+DecorationFocus=0,106,255
+DecorationHover=0,106,255
+ForegroundActive=61,174,233
+ForegroundInactive=73,73,73
+ForegroundLink=41,128,185
+ForegroundNegative=255,0,0
+ForegroundNeutral=255,85,0
+ForegroundNormal=0,0,0
+ForegroundPositive=0,170,0
+ForegroundVisited=127,140,141
+
+[General]
+ColorScheme=Feren
+
+[KDE]
+contrast=4
+widgetStyle=Breeze
+
+[WM]
+activeBackground=229,229,229
+activeBlend=238,238,238
+activeForeground=0,0,0
+inactiveBackground=229,229,229
+inactiveBlend=238,238,238
+inactiveForeground=73,73,73' > /root/.config/kdeglobals
+    #Pre-disable all unimportant kded5 background services, just in case, for OEM Config
+    /bin/echo '[Module-appmenu][$i]
+autoload=false
+
+[Module-baloosearchmodule][$i]
+autoload=false
+
+[Module-bluedevil][$i]
+autoload=false
+
+[Module-browserintegrationreminder][$i]
+autoload=false
+
+[Module-colorcorrectlocationupdater][$i]
+autoload=false
+
+[Module-device_automounter][$i]
+autoload=false
+
+[Module-freespacenotifier][$i]
+autoload=false
+
+[Module-kded_bolt][$i]
+autoload=false
+
+[Module-kded_printmanager][$i]
+autoload=false
+
+[Module-keyboard][$i]
+autoload=true
+
+[Module-khotkeys][$i]
+autoload=true
+
+[Module-kscreen][$i]
+autoload=true
+
+[Module-ksysguard][$i]
+autoload=false
+
+[Module-ktimezoned][$i]
+autoload=true
+
+[Module-kwrited][$i]
+autoload=true
+
+[Module-networkmanagement][$i]
+autoload=false
+
+[Module-networkstatus][$i]
+autoload=false
+
+[Module-proxyscout][$i]
+autoload=false
+
+[Module-remotenotifier][$i]
+autoload=false
+
+[Module-statusnotifierwatcher][$i]
+autoload=true
+
+[Module-touchpad][$i]
+autoload=true
+
+[Module-wacomtablet][$i]
+autoload=true' > /etc/xdg/kded5rc
+    #Same thing with keyboard shortcuts
+    /bin/echo '[Shortcuts][$i]
+Activate Next Tab[$d]
+Activate Previous Tab[$d]
+ActualSize[$d]
+AddBookmark[$d]
+Close[$d]
+FullScreen[$d]
+GotoLine[$d]
+PrintPreview[$d]
+Redo[$d]
+Replace[$d]' > /etc/xdg/khotkeysrc
+    /bin/echo '[kded5][$i]
+Show System Activity=none,none,Show System Activity
+_k_friendly_name=KDE Daemon
+
+[khotkeys][$i]
+_k_friendly_name=KDE Daemon
+{3a3668f1-9648-4680-b3c4-2975a7014681}=none,none,Launch Konsole
+{d03619b6-9b3c-48cc-9d9c-a2aadb485550}=none,none,Search
+
+[kmix][$i]
+_k_friendly_name=Audio Volume
+decrease_microphone_volume=Microphone Volume Down,Microphone Volume Down,Decrease Microphone Volume
+decrease_volume=Volume Down,Volume Down,Decrease Volume
+increase_microphone_volume=Microphone Volume Up,Microphone Volume Up,Increase Microphone Volume
+increase_volume=Volume Up,Volume Up,Increase Volume
+mic_mute=Microphone Mute,Microphone Mute,Mute Microphone
+mute=Volume Mute,Volume Mute,Mute
+
+[krunner.desktop][$i]
+RunClipboard=none,none,Run command on clipboard contents
+_k_friendly_name=KRunner
+_launch=none,none,KRunner
+
+[ksmserver][$i]
+Halt Without Confirmation=none,none,Halt Without Confirmation
+Lock Session=none,none,Lock Session
+Log Out=none,none,Log Out
+Log Out Without Confirmation=none,none,Log Out Without Confirmation
+Reboot Without Confirmation=none,none,Reboot Without Confirmation
+_k_friendly_name=ksmserver
+
+[kwin][$i]
+Activate Window Demanding Attention=Ctrl+Alt+A,Ctrl+Alt+A,Activate Window Demanding Attention
+Cube=none,none,Desktop Cube
+Cylinder=none,none,Desktop Cylinder
+Decrease Opacity=none,none,Decrease Opacity of Active Window by 5 %
+Expose=none,none,Toggle Present Windows (Current desktop)
+ExposeAll=none,none,Toggle Present Windows (All desktops)
+ExposeClass=none,none,Toggle Present Windows (Window class)
+Increase Opacity=none,none,Increase Opacity of Active Window by 5 %
+Invert=Ctrl+Alt+I,Meta+Ctrl+I,Toggle Invert Effect
+Invert Screen Colors=none,none,Invert Screen Colours
+InvertWindow=Ctrl+Alt+Shift+I,Meta+Ctrl+U,Toggle Invert Effect on Window
+Kill Window=Ctrl+Alt+Esc,Ctrl+Alt+Esc,Kill Window
+MoveMouseToCenter=Meta+F6,Meta+F6,Move Mouse to Centre
+MoveMouseToFocus=Meta+F5,Meta+F5,Move Mouse to Focus
+MoveZoomDown=none,none,Move Zoomed Area Downwards
+MoveZoomLeft=none,none,Move Zoomed Area to Left
+MoveZoomRight=none,none,Move Zoomed Area to Right
+MoveZoomUp=none,none,Move Zoomed Area Upwards
+Remove Window From Group=none,none,Remove Window From Group
+Setup Window Shortcut=none,none,Setup Window Shortcut
+Show Desktop=none,Meta+D,Show Desktop
+ShowDesktopGrid=none,none,Show Desktop Grid
+Sphere=none,none,Desktop Sphere
+Suspend Compositing=none,none,Suspend Compositing
+Switch One Desktop Down=none,none,Switch One Desktop Down
+Switch One Desktop Up=none,none,Switch One Desktop Up
+Switch One Desktop to the Left=none,none,Switch One Desktop to the Left
+Switch One Desktop to the Right=none,none,Switch One Desktop to the Right
+Switch Window Down=Meta+Alt+Down,Meta+Alt+Down,Switch to Window Below
+Switch Window Left=Meta+Alt+Left,Meta+Alt+Left,Switch to Window to the Left
+Switch Window Right=Meta+Alt+Right,Meta+Alt+Right,Switch to Window to the Right
+Switch Window Up=Meta+Alt+Up,Meta+Alt+Up,Switch to Window Above
+Switch to Desktop 1=none,Ctrl+F1,Switch to Desktop 1
+Switch to Desktop 10=none,none,Switch to Desktop 10
+Switch to Desktop 11=none,none,Switch to Desktop 11
+Switch to Desktop 12=none,none,Switch to Desktop 12
+Switch to Desktop 13=none,none,Switch to Desktop 13
+Switch to Desktop 14=none,none,Switch to Desktop 14
+Switch to Desktop 15=none,none,Switch to Desktop 15
+Switch to Desktop 16=none,none,Switch to Desktop 16
+Switch to Desktop 17=none,none,Switch to Desktop 17
+Switch to Desktop 18=none,none,Switch to Desktop 18
+Switch to Desktop 19=none,none,Switch to Desktop 19
+Switch to Desktop 2=none,none,Switch to Desktop 2
+Switch to Desktop 20=none,none,Switch to Desktop 20
+Switch to Desktop 3=none,none,Switch to Desktop 3
+Switch to Desktop 4=none,none,Switch to Desktop 4
+Switch to Desktop 5=none,none,Switch to Desktop 5
+Switch to Desktop 6=none,none,Switch to Desktop 6
+Switch to Desktop 7=none,none,Switch to Desktop 7
+Switch to Desktop 8=none,none,Switch to Desktop 8
+Switch to Desktop 9=none,none,Switch to Desktop 9
+Switch to Next Desktop=none,none,Switch to Next Desktop
+Switch to Next Screen=none,none,Switch to Next Screen
+Switch to Previous Desktop=none,none,Switch to Previous Desktop
+Switch to Previous Screen=none,none,Switch to Previous Screen
+Switch to Screen 0=none,none,Switch to Screen 0
+Switch to Screen 1=none,none,Switch to Screen 1
+Switch to Screen 2=none,none,Switch to Screen 2
+Switch to Screen 3=none,none,Switch to Screen 3
+Switch to Screen 4=none,none,Switch to Screen 4
+Switch to Screen 5=none,none,Switch to Screen 5
+Switch to Screen 6=none,none,Switch to Screen 6
+Switch to Screen 7=none,none,Switch to Screen 7
+Toggle Night Color=none,none,Toggle Night Color
+Toggle Window Raise/Lower=none,none,Toggle Window Raise/Lower
+ToggleCurrentThumbnail=none,none,Toggle Thumbnail for Current Window
+ToggleMouseClick=Meta+Alt+M,none,Toggle Mouse Click Effect
+Walk Through Desktop List=none,none,Walk Through Desktop List
+Walk Through Desktop List (Reverse)=none,none,Walk Through Desktop List (Reverse)
+Walk Through Desktops=none,none,Walk Through Desktops
+Walk Through Desktops (Reverse)=none,none,Walk Through Desktops (Reverse)
+Walk Through Window Tabs=none,none,Walk Through Window Tabs
+Walk Through Window Tabs (Reverse)=none,none,Walk Through Window Tabs (Reverse)
+Walk Through Windows=Alt+Tab,Alt+Tab,Walk Through Windows
+Walk Through Windows (Reverse)=Alt+Shift+Tab,Alt+Shift+Backtab,Walk Through Windows (Reverse)
+Walk Through Windows Alternative=none,none,Walk Through Windows Alternative
+Walk Through Windows Alternative (Reverse)=none,none,Walk Through Windows Alternative (Reverse)
+Walk Through Windows of Current Application=Alt+`,Alt+`,Walk Through Windows of Current Application
+Walk Through Windows of Current Application (Reverse)=Alt+¬,Alt+~,Walk Through Windows of Current Application (Reverse)
+Walk Through Windows of Current Application Alternative=none,none,Walk Through Windows of Current Application Alternative
+Walk Through Windows of Current Application Alternative (Reverse)=none,none,Walk Through Windows of Current Application Alternative (Reverse)
+Window Above Other Windows=none,none,Keep Window Above Others
+Window Below Other Windows=none,none,Keep Window Below Others
+Window Close=Alt+F4,Alt+F4,Close Window
+Window Fullscreen=none,none,Make Window Fullscreen
+Window Grow Horizontal=none,none,Pack Grow Window Horizontally
+Window Grow Vertical=none,none,Pack Grow Window Vertically
+Window Lower=none,none,Lower Window
+Window Maximize=Meta+Up,Meta+PgUp,Maximise Window
+Window Maximize Horizontal=none,none,Maximise Window Horizontally
+Window Maximize Vertical=none,none,Maximise Window Vertically
+Window Minimize=Meta+Down,Meta+PgDown,Minimise Window
+Window Move=none,none,Move Window
+Window No Border=none,none,Hide Window Border
+Window On All Desktops=none,none,Keep Window on All Desktops
+Window One Desktop Down=none,none,Window One Desktop Down
+Window One Desktop Up=none,none,Window One Desktop Up
+Window One Desktop to the Left=none,none,Window One Desktop to the Left
+Window One Desktop to the Right=none,none,Window One Desktop to the Right
+Window Operations Menu=none,Alt+F3,Window Operations Menu
+Window Pack Down=none,none,Pack Window Down
+Window Pack Left=none,none,Pack Window to the Left
+Window Pack Right=none,none,Pack Window to the Right
+Window Pack Up=none,none,Pack Window Up
+Window Quick Tile Bottom=Meta+Shift+Down,Meta+Down,Quick Tile Window to the Bottom
+Window Quick Tile Bottom Left=none,none,Quick Tile Window to the Bottom Left
+Window Quick Tile Bottom Right=none,none,Quick Tile Window to the Bottom Right
+Window Quick Tile Left=Meta+Left,Meta+Left,Quick Tile Window to the Left
+Window Quick Tile Right=Meta+Right,Meta+Right,Quick Tile Window to the Right
+Window Quick Tile Top=Meta+Shift+Up,Meta+Up,Quick Tile Window to the Top
+Window Quick Tile Top Left=none,none,Quick Tile Window to the Top Left
+Window Quick Tile Top Right=none,none,Quick Tile Window to the Top Right
+Window Raise=none,none,Raise Window
+Window Resize=none,none,Resize Window
+Window Shade=none,none,Shade Window
+Window Shrink Horizontal=none,none,Pack Shrink Window Horizontally
+Window Shrink Vertical=none,none,Pack Shrink Window Vertically
+Window to Desktop 1=none,none,Window to Desktop 1
+Window to Desktop 10=none,none,Window to Desktop 10
+Window to Desktop 11=none,none,Window to Desktop 11
+Window to Desktop 12=none,none,Window to Desktop 12
+Window to Desktop 13=none,none,Window to Desktop 13
+Window to Desktop 14=none,none,Window to Desktop 14
+Window to Desktop 15=none,none,Window to Desktop 15
+Window to Desktop 16=none,none,Window to Desktop 16
+Window to Desktop 17=none,none,Window to Desktop 17
+Window to Desktop 18=none,none,Window to Desktop 18
+Window to Desktop 19=none,none,Window to Desktop 19
+Window to Desktop 2=none,none,Window to Desktop 2
+Window to Desktop 20=none,none,Window to Desktop 20
+Window to Desktop 3=none,none,Window to Desktop 3
+Window to Desktop 4=none,none,Window to Desktop 4
+Window to Desktop 5=none,none,Window to Desktop 5
+Window to Desktop 6=none,none,Window to Desktop 6
+Window to Desktop 7=none,none,Window to Desktop 7
+Window to Desktop 8=none,none,Window to Desktop 8
+Window to Desktop 9=none,none,Window to Desktop 9
+Window to Next Desktop=none,none,Window to Next Desktop
+Window to Next Screen=,none,Window to Next Screen
+Window to Previous Desktop=none,none,Window to Previous Desktop
+Window to Previous Screen=,none,Window to Previous Screen
+Window to Screen 0=none,none,Window to Screen 0
+Window to Screen 1=none,none,Window to Screen 1
+Window to Screen 2=none,none,Window to Screen 2
+Window to Screen 3=none,none,Window to Screen 3
+Window to Screen 4=none,none,Window to Screen 4
+Window to Screen 5=none,none,Window to Screen 5
+Window to Screen 6=none,none,Window to Screen 6
+Window to Screen 7=none,none,Window to Screen 7
+_k_friendly_name=KWin
+view_actual_size=Meta+0,Meta+0,Actual Size
+view_zoom_in=,Meta+=,Zoom In
+view_zoom_out=Meta+-,Meta+-,Zoom Out
+
+[mediacontrol][$i]
+_k_friendly_name=mediacontrol
+mediavolumedown=none,none,Media volume down
+mediavolumeup=none,none,Media volume up
+nextmedia=none,none,Media playback next
+playpausemedia=none,none,Play/Pause media playback
+previousmedia=none,none,Media playback previous
+stopmedia=none,none,Stop media playback
+
+[org.kde.spectacle.desktop][$i]
+ActiveWindowScreenShot=none,none,Capture Active Window
+CurrentMonitorScreenShot=none,none,Capture Current Monitor
+FullScreenScreenShot=none,none,Capture Entire Desktop
+RectangularRegionScreenShot=none,none,Capture Rectangular Region
+_k_friendly_name=org.kde.spectacle.desktop
+_launch=none,none,Launch Spectacle
+
+[org_kde_powerdevil][$i]
+Decrease Keyboard Brightness=Keyboard Brightness Down,Keyboard Brightness Down,Decrease Keyboard Brightness
+Decrease Screen Brightness=Monitor Brightness Down,Monitor Brightness Down,Decrease Screen Brightness
+Hibernate=Hibernate,Hibernate,Hibernate
+Increase Keyboard Brightness=Keyboard Brightness Up,Keyboard Brightness Up,Increase Keyboard Brightness
+Increase Screen Brightness=Monitor Brightness Up,Monitor Brightness Up,Increase Screen Brightness
+PowerOff=Power Off,Power Off,Power Off
+Sleep=Sleep,Sleep,Suspend
+Toggle Keyboard Backlight=Keyboard Light On/Off,Keyboard Light On/Off,Toggle Keyboard Backlight
+Turn Off Screen=none,none,Turn Off Screen
+_k_friendly_name=Power Management
+
+[plasmashell][$i]
+_k_friendly_name=Plasma
+activate widget 3=none,none,Activate Simple Menu Widget
+clear-history=none,none,Clear Clipboard History
+clipboard_action=none,none,Enable Clipboard Actions
+cycleNextAction=none,none,Next History Item
+cyclePrevAction=none,none,Previous History Item
+edit_clipboard=none,none,Edit Contents...
+manage activities=none,none,Activities...
+next activity=none,none,Walk through activities
+previous activity=none,none,Walk through activities (Reverse)
+repeat_action=none,none,Manually Invoke Action on Current Clipboard
+show dashboard=none,none,Show Desktop
+show-barcode=none,none,Show Barcode...
+show-on-mouse-pos=none,none,Open Klipper at Mouse Position
+stop current activity=none,none,Stop Current Activity
+
+[wacomtablet][$i]
+Map to fullscreen=Meta+Ctrl+F,Meta+Ctrl+F,Map to fullscreen
+Map to screen 1=Meta+Ctrl+1,Meta+Ctrl+1,Map to screen 1
+Map to screen 2=Meta+Ctrl+2,Meta+Ctrl+2,Map to screen 2
+Next Profile=Meta+Ctrl+N,Meta+Ctrl+N,Next profile
+Previous Profile=Meta+Ctrl+P,Meta+Ctrl+P,Previous Profile
+Toggle screen map selection=Meta+Ctrl+M,Meta+Ctrl+M,Toggle between all screens
+Toggle stylus mode=Meta+Ctrl+S,Meta+Ctrl+S,Toggle the Stylus Tool Relative/Absolute
+Toggle touch tool=,Meta+Ctrl+T,Enable/Disable the Touch Tool
+_k_friendly_name=Wacom Tablet' > /etc/xdg/kglobalshortcutsrc
+    #Also copy those configs to oemconfiguser's .config since there's a bug, IIRC, in Plasma where it ignores /etc/xdg's kglobalshortcutsrc file when looking for defaults if the user doesn't have their own copy of the file in their .config folder
+    cp -f /etc/xdg/kglobalshortcutsrc /oemconfiguser/.config/kglobalshortcutsrc
+    
+    #Prevent automatic locking, since the user cannot be unlocked as no password is set but also the non-existant password is not unset
+    /bin/echo "[Daemon]
+Autolock=false" > /oemconfiguser/.config/kscreenlockerrc
+    #Disable certain functions that can allow the user to escape the restrictions enforced by OEM Config
+    echo "#!/bin/bash
+exit 1" > /usr/local/sbin/kcmshell5
+    #Make this executable so it gets in the way of commands running them by just their command names
+    chmod +x /usr/local/sbin/kcmshell5
+    cd
+fi
+
+#Remove the files that allowed for preparing for OEM Setup because they're no longer needed and could cause problems if relaunched too before OEM Config is complete
+rm -f /usr/bin/feren-oem-prepremove /usr/share/feren-oem-config/systemd/feren-oem-preparations.service
+
+#Disable and remove this SystemD Service
+systemctl disable feren-oem-preparations.service
+rm -f /lib/systemd/system/feren-oem-preparations.service
+
+#Use Cinnamon System Settings graphic if on Feren OS Classic for Calamares's Feren OS Installation Slideshow
+if [ ! -f /usr/bin/plasmashell ] && [ -f /usr/bin/cinnamon ]; then
+    rm -f /etc/calamares/branding/feren/slide-items/slide8-item.png
+    mv /etc/calamares/branding/feren/slide-items/slide8-item-cinnamon.png /etc/calamares/branding/feren/slide-items/slide8-item.png
+fi
+
+#We're done, just exit with exit code 0
+exit 0

@@ -1,0 +1,879 @@
+#!/bin/bash
+
+if [ "$1" = "authenticate" ]; then
+    apt update
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Make the rest of the process not require a password for seamlessness - if anyone else would like to submit a better way for handling this, please do in a Pull Request.
+    cp -f /usr/share/feren-majorupdate/resources/after-auth.policy /usr/share/polkit-1/actions/org.feren.major-update.upgrade.policy
+    
+    exit 0
+fi
+
+
+if [ "$1" = "onboot-mint-transition" ]; then
+    plymouth message --text="Finishing the transition to Linux Mint 19.3..."
+    dpkg --configure -a
+    apt-get -f install -y
+    if [ ! -f /etc/feren-os-temp/mint-transition-progress ]; then
+        plymouth message --text="Backing up Feren OS Classic applets and extensions and copying them to all the existing user accounts"
+        "$0" minttransition1
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "1" ]; then
+        plymouth message --text="Adding Linux Mint's full repository set and preparing for conversion"
+        "$0" minttransition2p1
+    fi
+    
+    #Check for internet and abort if none is found
+    plymouth message --text="Checking for an internet connection before continuing with the conversion..."
+    nm-online
+    if [ ! $? -eq 0 ]; then
+        plymouth message --text="Aborting due to being unable to connect to the internet. We will try again when you boot next." --no-wrap
+        echo "Aborting due to being unable to connect to the internet. We will try again when you boot next."
+        sleep 4
+        exit 1
+    fi
+    
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p1" ]; then
+        plymouth message --text="Removing a few Feren OS packages and removing PPAs added by Feren OS Theme Packages"
+        "$0" minttransition2p2
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p2" ]; then
+        plymouth message --text="Installing Themer Theme applying utility for Linux Mint and installing Linux Mint metapackages"
+        "$0" minttransition2p3
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p3" ]; then
+        plymouth message --text="Adding autostart shortcuts to user accounts to finalise changes on login"
+        "$0" minttransition2p4
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p4" ]; then
+        plymouth message --text="Completely removing all remaining Feren OS packages and reinstalling unpatched files"
+        "$0" minttransition2p5
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p5" ]; then
+        plymouth message --text="Installing the Linux Mint metapackages again to re-add some lost programs and updating initramfs"
+        "$0" minttransition2p6
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p6" ]; then
+        plymouth message --text="Deleting all Feren OS Theme Colourisations"
+        "$0" minttransition2p7
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p7" ]; then
+        plymouth message --text="Removing the Feren OS repositories, downgrading packages patched/updated by Feren OS and doing final tasks"
+        "$0" minttransition2p8
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    if [ "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p8" ]; then
+        plymouth message --text="Installing default Linux Mint packages"
+        "$0" minttransition3
+        if [ ! $? -eq 0 ]; then
+            plymouth message --text="Aborting due to errors. We will try again when you boot next." --no-wrap
+            echo "Aborting due to errors. We will try again when you boot next."
+            sleep 4
+            exit 1
+        fi
+    fi
+    apt purge -y gnome-clocks gnome-maps xpad evince krita geary vlc dconf-editor feren-majorupdate-handler
+    plymouth message --text=""
+    if [ ! -z "$2" ]; then
+        echo "[Desktop Entry]
+Terminal=false
+Type=Application
+Categories=GNOME;GTK;System;
+StartupNotify=false
+Name=Finish process
+Exec=/tmp/feren-majorupdate-mint-aborted
+Icon=linuxmint-logo-filled-ring
+Comment=Finish the transition process
+OnlyShowIn=X-Cinnamon;" > "/home/$2/.config/autostart/feren-mint-transfer-finish.desktop"
+        echo "#!/bin/bash
+
+rm -f ~/.config/autostart/feren-mint-transfer-finish.desktop
+zenity --error --title='Update unsuccessful' --text='We have successfully converted your Feren OS installation into Linux Mint 19.3, however the update was aborted
+before the upgrade could begin. To upgrade to Linux Mint 20, do so manually via the official tutorial by Linux Mint.
+
+Once you have pressed OK, your web browser will open to the official Linux Mint upgrade instructions.
+
+
+I am sorry to see you go, but it was always your choice whether you wanted to join the future of Feren OS or stick
+to Cinnamon.
+Regardless of that choice, I hope you will enjoy your new Operating System. Thank you for using Feren OS Classic.
+- The Feren OS Developer' --no-wrap
+nohup xdg-open https://linuxmint-user-guide.readthedocs.io/en/latest/upgrade-to-mint-20.html >/dev/null 2>&1 &" > /tmp/feren-majorupdate-mint-aborted
+        chmod +x /tmp/feren-majorupdate-mint-aborted "/home/$2/.config/autostart/feren-mint-transfer-finish.desktop"
+        chown -h $2:$2 "/home/$2/.config/autostart/feren-mint-transfer-finish.desktop"
+    fi
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #No longer need this
+    rm -f /usr/share/polkit-1/actions/org.feren.major-update.upgrade.policy
+    
+    #Final cleanup
+    rm -f /usr/bin/feren-terminal-launcher-temporary
+    apt purge feren-majorupdate-handler -y
+
+    rm -f /etc/feren-os-temp/mint-transition-progress /etc/feren-majorupdate-underway /etc/xdg/autostart/feren-majorupdate.desktop
+    rm -rf /etc/feren-os-temp/
+    exit 0
+fi
+
+if [ "$1" = "minttransition1" ] || [ "$1" = "minttransition2p1" ] || [ "$1" = "minttransition2p2" ] || [ "$1" = "minttransition2p3" ] || [ "$1" = "minttransition2p4" ] || [ "$1" = "minttransition2p5" ] || [ "$1" = "minttransition2p6" ] || [ "$1" = "minttransition2p7" ] || [ "$1" = "minttransition2p8" ] || [ "$1" = "minttransition3" ] || [ "$1" = "minttransition4" ] || [ "$1" = "minttransition5" ]; then
+    #Make sure it's Feren OS Classic on bionic, or else reject the command. Also keep post-Mint-conversion's repository changes in mind.
+    if grep -q 'bionic' /etc/apt/sources.list || grep -q 'bionic' /etc/apt/sources.list.d/official-package-repositories.list; then
+        if [ -f /usr/bin/cinnamon ] && [ ! -f /usr/bin/plasmashell ]; then
+            :
+        else
+            echo "This is only available in Feren OS Classic."
+            exit 1
+        fi
+    else
+        echo "This is only available in Feren OS Classic."
+        exit 1
+    fi
+fi
+
+if [ "$1" = "minttransition1" ]; then
+    if [ -f "/etc/feren-os-temp/mint-transition-progress" ]; then
+        #This step must've already been done - skip
+        apt update
+        chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+        exit 0
+    fi
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Kill the screenlocker and stop logout temporarily in Cinnamon
+    killall cinnamon-screensaver
+    #TODO: Add DCONF restriction adding, temporarily, to block Cinnamon Screensaver, User Switching and Logouts
+    
+    #Mark the upgrade as underway
+    echo "gotomint" > /etc/feren-majorupdate-underway
+    sed -i '/Hidden=/c\Hidden=false' /etc/xdg/autostart/feren-majorupdate.desktop
+    
+    #Add a systemd service to finish the transition on boot just in case this ends prematurely
+    echo "[Unit]
+Description=Finish Mint 19.3 Transition
+After=systemd-networkd-wait-online.service
+Before=lightdm.service apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service feren-autopackagemgmt.service
+Wants=systemd-networkd-wait-online.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/bin/feren-majorupdate-commands onboot-mint-transition $2'
+TimeoutSec=infinity
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target" > /lib/systemd/system/finish-mint-transition.service
+    systemctl enable finish-mint-transition.service
+    
+    
+    #Copy the applets and extensions to all the home folders
+    applets="CinnVIIStarkMenu@NikoKrause commandLauncher@scollins search@bownz show-hide-applets@mohammad-sn stopwatch@pdcurtis SW++@mohammad-sn toggle-on-screen-keyboard@glebihan weather@mockturtl window-buttons-with-title@fmete"
+    extensions="cinnamon-maximus@fmete gTile@shuairan transparent-panels@germanfr"
+    cd /home
+    for username in *; do
+        if [ -d "$username" ] && id "$username" >/dev/null 2>&1; then
+            for appletname in $applets; do
+                if [ ! -d "/home/$username/.local/share/cinnamon/applets/$appletname" ]; then
+                    cp -Rfa "/usr/share/cinnamon/applets/$appletname" "/home/$username/.local/share/cinnamon/applets/$appletname"
+                    chown -hR $username:$username "/home/$username/.local/share/cinnamon/applets/$appletname"
+                else
+                    echo "Not copying $appletname to $username - applet is already locally installed" > /var/log/feren-mint-transfer.log
+                fi
+            done
+            for extensionname in $extensions; do
+                if [ ! -d "/home/$username/.local/share/cinnamon/extensions/$extensionname" ]; then
+                    cp -Rfa "/usr/share/cinnamon/extensions/$extensionname" "/home/$username/.local/share/cinnamon/extensions/$extensionname"
+                    chown -hR $username:$username "/home/$username/.local/share/cinnamon/extensions/$extensionname"
+                else
+                    echo "Not copying $extensionname to $username - extension is already locally installed" > /var/log/feren-mint-transfer.log
+                fi
+            done
+        fi
+    done
+    
+    mkdir /etc/feren-os-temp
+    echo "1" > /etc/feren-os-temp/mint-transition-progress
+    
+    #Make the rest of the process not require a password for seamlessness - if anyone else would like to submit a better way for handling this, please do in a Pull Request.
+    cp -f /usr/share/feren-majorupdate/resources/after-auth.policy /usr/share/polkit-1/actions/org.feren.major-update.upgrade.policy
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Step 1 is done
+    exit 0
+fi
+
+
+
+
+OIFS="$IFS"
+IFS=$'\n'
+
+
+if [ "$1" = "minttransition2p1" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "1" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+
+
+    #Add full set of repository components to Linux Mint's repository and update
+    sed -i 's/main import backport/main import backport upstream/g' /etc/apt/sources.list.d/official-package-repositories.list
+    sed -i 's/main import backport upstream upstream/main import backport upstream/g' /etc/apt/sources.list.d/official-package-repositories.list
+    apt update
+    #Remove first set of Feren OS packages and mark Feren MajorUpdater as manually installed just in case
+    apt install feren-majorupdate-handler feren-terminal-launcher -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    echo "2p1" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p2" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p1" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    apt purge plymouth-theme-feren-logo plymouth-theme-feren-classic-logo feren-os feren-os-cinnamon feren-system-packages feren-system-packages-cinnamon feren-app-packages-cinnamon feren-app-packages feren-meta-stock -y
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    #Remove Feren OS PPA packages
+    apt purge fossfreedom-arc-ppa moka-daily-ppa noobslab-icons2-ppa noobslab-icons-ppa noobslab-macbuntu-ppa noobslab-themes-ppa numix-ppa snwh-pulp-ppa tista-adapta-ppa -y
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    echo "2p2" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p3" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p2" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Install Themer Theme recognising tool in place of Themer post-upgrade, and also install the Mint theme so that it can be used for resetting the panel layout
+    apt install feren-themer-cinnamon-mint -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    dpkg --purge --force-all feren-themer
+    dpkg -i --auto-deconfigure /usr/share/feren-majorupdate/resources/mint/feren-themer-cinnamon.deb
+    apt-get -f install -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+       
+    #Install Linux Mint packages in place
+    apt purge feren-maintenance -y --allow-downgrades
+    apt install mint-meta-cinnamon mint-meta-core -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    echo "2p3" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+fi
+
+if [ "$1" = "minttransition2p4" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p3" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Add startup command to every user to set their theme on startup to Mint-Y-Aqua
+    echo '#!/bin/bash
+
+if [ "$(gsettings get org.cinnamon.theme name)" = "'"'"'feren'"'"'" ] || [ "$(gsettings get org.cinnamon.theme name)" = "'"'"'feren-light'"'"'" ]; then
+    gsettings set org.cinnamon.theme name "Mint-Y-Aqua"
+elif [ "$(gsettings get org.cinnamon.theme name)" = "'"'"'feren-dark'"'"'" ]; then
+    gsettings set org.cinnamon.theme name "Mint-Y-Dark-Aqua"
+elif [ ! -d "/usr/share/themes/$(gsettings get org.cinnamon.theme name | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.themes/$(gsettings get org.cinnamon.theme name | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.local/share/themes/$(gsettings get org.cinnamon.theme name | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ]; then
+    gsettings set org.cinnamon.theme name "Mint-Y-Aqua"
+fi
+
+if [ "$(gsettings get org.cinnamon.desktop.interface gtk-theme)" = "'"'"'feren'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.interface gtk-theme "Mint-Y-Aqua"
+elif [ "$(gsettings get org.cinnamon.desktop.interface gtk-theme)" = "'"'"'feren-dark'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.interface gtk-theme "Mint-Y-Dark-Aqua"
+elif [ ! -d "/usr/share/themes/$(gsettings get org.cinnamon.desktop.interface gtk-theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.themes/$(gsettings get org.cinnamon.desktop.interface gtk-theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.local/share/themes/$(gsettings get org.cinnamon.desktop.interface gtk-theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ]; then
+    gsettings set org.cinnamon.desktop.interface gtk-theme "Mint-Y-Aqua"
+fi
+
+if [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren'"'"'" ] || [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren WinStyle'"'"'" ] || [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren macStyle'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.wm.preferences theme "Mint-Y"
+    gsettings set org.cinnamon.desktop.wm.preferences titlebar-font "Ubuntu Medium 10"
+elif [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren-dark'"'"'" ] || [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren WinStyle Dark'"'"'" ] || [ "$(gsettings get org.cinnamon.desktop.wm.preferences theme)" = "'"'"'feren macStyle Dark'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.wm.preferences theme "Mint-Y-Dark"
+    gsettings set org.cinnamon.desktop.wm.preferences titlebar-font "Ubuntu Medium 10"
+elif [ ! -d "/usr/share/themes/$(gsettings get org.cinnamon.desktop.wm.preferences theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.themes/$(gsettings get org.cinnamon.desktop.wm.preferences theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ] && [ ! -d "$HOME/.local/share/themes/$(gsettings get org.cinnamon.desktop.wm.preferences theme | sed -e "s/^'"'"'//" -e "s/'"'"'$//")" ]; then
+    gsettings set org.cinnamon.desktop.wm.preferences theme "Mint-Y"
+    gsettings set org.cinnamon.desktop.wm.preferences titlebar-font "Ubuntu Medium 10"
+fi
+
+if [ "$(gsettings get org.cinnamon.desktop.interface icon-theme)" = "'"'"'Inspire'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.interface icon-theme "Mint-Y-Aqua"
+elif [ "$(gsettings get org.cinnamon.desktop.interface icon-theme)" = "'"'"'Inspire Dark'"'"'" ] || [ "$(gsettings get org.cinnamon.desktop.interface icon-theme)" = "'"'"'Inspire-Dark'"'"'" ]; then
+    gsettings set org.cinnamon.desktop.interface icon-theme "Mint-Y-Dark-Aqua"
+fi
+
+if [ -d ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause ]; then
+    sed -i "s%/usr/share/feren-os/logos/Logo white.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo white flat.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo black.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    sed -i "s%/usr/share/feren-os/logos/blank.png%blank%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    
+    sed -i "s%feren-store%mintinstall%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+    sed -i "s%softwarecenter%mintinstall%g" ~/.cinnamon/configs/CinnVIIStarkMenu@NikoKrause/*.json
+fi
+if [ -d ~/.cinnamon/configs/menu@cinnamon.org ]; then
+    sed -i "s%/usr/share/feren-os/logos/Logo white.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/menu@cinnamon.org/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo white flat.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/menu@cinnamon.org/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo black.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/menu@cinnamon.org/*.json
+    sed -i "s%/usr/share/feren-os/logos/Logo.png%linuxmint-logo-filled-ring%g" ~/.cinnamon/configs/menu@cinnamon.org/*.json
+    sed -i "s%/usr/share/feren-os/logos/blank.png%blank%g" ~/.cinnamon/configs/menu@cinnamon.org/*.json
+fi
+
+sed -i "s%/usr/share/feren-os/logos/Logo white.png%linuxmint-logo-filled-ring%g" ~/.local/share/cinnamon/applets/CinnVIIStarkMenu@NikoKrause/*/settings-schema.json
+sed -i "s%feren-store%mintinstall%g" ~/.local/share/cinnamon/applets/CinnVIIStarkMenu@NikoKrause/*/settings-schema.json
+sed -i "s%softwarecenter%mintinstall%g" ~/.local/share/cinnamon/applets/CinnVIIStarkMenu@NikoKrause/*/settings-schema.json
+
+rm -f ~/.config/autostart/feren-mint-transfer-userland.desktop ~/.config/autostart/recolourthemes.desktop ~/.config/autostart/change-pins.desktop ~/.config/autostart/feren-cinn2plas.desktop ~/.config/autostart/Conky.desktop ~/.config/autostart/feren-store-update-flatpak.desktop
+
+killall conky
+
+
+exit 0' > /usr/bin/feren-mint-transfer-userland
+    chmod +x /usr/bin/feren-mint-transfer-userland
+    
+    cd /home
+    for username in *; do
+        if [ -d "$username" ] && id "$username" >/dev/null 2>&1; then
+            echo "[Desktop Entry]
+Terminal=false
+Type=Application
+Categories=GNOME;GTK;System;
+StartupNotify=false
+Name=Make final adjustments to account
+Exec=/usr/bin/feren-mint-transfer-userland
+Icon=linuxmint-logo-filled-ring
+Comment=Finish the transition process
+OnlyShowIn=X-Cinnamon;" > "/home/$username/.config/autostart/feren-mint-transfer-userland.desktop"
+            chmod +x "/home/$username/.config/autostart/feren-mint-transfer-userland.desktop"
+            chown -h $username:$username "/home/$username/.config/autostart/feren-mint-transfer-userland.desktop"
+        fi
+    done
+    
+    echo "2p4" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p5" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p4" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Remove remaining Feren OS packages
+    cp -a /usr/bin/feren-terminal-launcher /usr/bin/feren-terminal-launcher-temporary
+    sed -i 's/--wait/--wait --full-screen/g' /usr/bin/feren-terminal-launcher-temporary
+    cd /tmp
+    apt purge fossfreedom-arc-ppa moka-daily-ppa noobslab-icons2-ppa noobslab-icons-ppa noobslab-macbuntu-ppa noobslab-themes-ppa numix-ppa snwh-pulp-ppa tista-adapta-ppa -y
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    apt purge calamares-branding-feren calamares-settings-feren-cinnamon calamares-settings-feren-plasma cinnamon-control-center-feren feren-application-remover feren-appmenu-integration feren-app-packages-plasma feren-artwork feren-autopackagemgmt feren-autoupdate-config feren-backgrounds feren-base-upgrade-operations feren-browser-manager feren-calamares-config feren-calamares-global-settings feren-calamares-languagesetter feren-chromeos-layout-cinnamon feren-cinn2plas feren-cinn2plas-backupandrestore feren-cinnamon-additions feren-classicwin-layout-cinnamon feren-config feren-config-cinnamon feren-config-education feren-conky-toggle feren-default-layout-cinnamon feren-feedback feren-finalwin-layout-cinnamon feren-flatpak-management feren-fonts feren-games-pack feren-highcontrast feren-icon-patches feren-info-cinnamon feren-info-kde feren-info-stock feren-layout-manager feren-macos-layout-cinnamon feren-maintenance feren-meta-cinnamon feren-midwin-layout-cinnamon feren-mint-layout-cinnamon feren-online-accounts feren-oobe feren-os-eol-alerts feren-os-ppa-settings feren-ppas feren-qtgtk-integration feren-repository-keyring feren-safeguards feren-slick-config feren-smooth-upgrade ferensources ferensources-ubuntu feren-start-page feren-store feren-store-metadata feren-terminal-launcher feren-theme feren-theme-colouriser feren-theme-colouriser-cinnamon-feren feren-theme-colouriser-cinnamon-meta feren-theme-colouriser-cinnamon-win8 feren-theme-colouriser-cinnamon-win10 feren-theme-downloader feren-themer feren-themer-gambas feren-themer-plasma feren-transfer-tool feren-ubuntu-layout-cinnamon feren-usercreation-config feren-user-pictures feren-video-backgrounds feren-vivaldi-theme feren-vm-warning feren-welcome feren-wine-dialog feren-xsettings grub-modifications-feren grub-theme-feren inspire-icon-theme inspire-icon-theme-dark inspire-icon-theme-old inspire-icon-theme-old-blue oem-config-feren ubiquity-slideshow-feren vivaldi-config-feren wine-duo-feren wine-meta-feren -y --allow-remove-essential
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    #Mark remnants as automatically installed
+    /usr/bin/apt-mark manual adapta-gtk-theme
+    /usr/bin/apt-mark manual papirus-icons
+    /usr/bin/apt-mark manual arc-theme
+    /usr/bin/apt-mark manual arc-icons
+    /usr/bin/apt-mark manual paper-icon-theme
+    /usr/bin/apt-mark manual chromeos-theme
+    /usr/bin/apt-mark manual macos-theme
+    /usr/bin/apt-mark manual macbuntu-os-icons
+    /usr/bin/apt-mark manual macos-docky-themes
+    /usr/bin/apt-mark manual macosx-theme
+    /usr/bin/apt-mark manual macosx-icons
+    /usr/bin/apt-mark manual numix-gtk-theme
+    /usr/bin/apt-mark manual numix-cinnamon
+    /usr/bin/apt-mark manual numix-icon-theme-circle
+    /usr/bin/apt-mark manual light-themes
+    /usr/bin/apt-mark manual ubuntu-mono
+    /usr/bin/apt-mark manual windows10-icons
+    /usr/bin/apt-mark manual windows10-theme
+    /usr/bin/apt-mark manual windows7-theme
+    /usr/bin/apt-mark manual windows8-icons
+    /usr/bin/apt-mark manual windows8-theme
+    /usr/bin/apt-mark manual windowsclassic-themes
+    /usr/bin/apt-mark manual windowsvista-theme
+    /usr/bin/apt-mark manual windowsvista-icons
+    /usr/bin/apt-mark manual windowsxp-theme
+    /usr/bin/apt-mark manual windowsxp-icons
+    /usr/bin/apt-mark manual feren-backgrounds-aluminium
+    /usr/bin/apt-mark manual feren-backgrounds-beryllium
+    /usr/bin/apt-mark manual feren-backgrounds-lucid
+    /usr/bin/apt-mark manual feren-backgrounds-murdock
+    /usr/bin/apt-mark manual feren-backgrounds-original
+    /usr/bin/apt-mark manual feren-backgrounds-neon
+    /usr/bin/apt-mark manual feren-backgrounds-oxygen
+    /usr/bin/apt-mark manual feren-backgrounds-platinum
+    /usr/bin/apt-mark manual feren-backgrounds-rhenium
+    /usr/bin/apt-mark manual feren-backgrounds-silver
+    /usr/bin/apt-mark manual feren-backgrounds-titanium
+    /usr/bin/apt-mark manual feren-backgrounds-uranium
+    /usr/bin/apt-mark manual feren-backgrounds-vanadium
+    /usr/bin/apt-mark manual feren-backgrounds-xenon
+    /usr/bin/apt-mark manual feren-backgrounds-yttrium
+    /usr/bin/apt-mark manual feren-backgrounds-zinc
+    /usr/bin/apt-mark manual feren-extra-backgrounds
+    
+    #Reinstall what got lost
+    apt install --reinstall -y --allow-downgrades cinnamon cinnamon-common mint-artwork cups-filters unattended-upgrades gnome-accessibility-themes metacity-common mint-info-cinnamon base-files grub-common
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    echo "2p5" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p6" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p5" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Install Linux Mint packages in place once more
+    apt install mint-meta-cinnamon mint-meta-core -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    #Update initramfs
+    update-initramfs -u -k all
+    
+    echo "2p6" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p7" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p6" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Delete all theme colourisations
+    sudo rm -rf "/usr/share/themes/feren Cyan" "/usr/share/themes/feren Green" "/usr/share/themes/feren Grey" "/usr/share/themes/feren Orange" "/usr/share/themes/feren Pink" "/usr/share/themes/feren Red"
+    cd /home
+    for username in *; do
+        if [ -d "$username" ] && id "$username" >/dev/null 2>&1; then
+            #Do the stuff here
+            cd /home/$username/.themes
+            for maybecolourisedtheme in *; do
+                if [ -f "$maybecolourisedtheme/colouriser-theme-settings" ] && [ -f "$maybecolourisedtheme/theme-colouriser-colour" ] && [ -f "$maybecolourisedtheme/theme-colouriser-type" ]; then
+                    rm -rf "$maybecolourisedtheme/assets" "$maybecolourisedtheme/cinnamon" "$maybecolourisedtheme/gtk-2.0" "$maybecolourisedtheme/gtk-3.0" "$maybecolourisedtheme/gtk-3.20" "$maybecolourisedtheme/metacity-1" "$maybecolourisedtheme/xfce-notify-4.0" "$maybecolourisedtheme/xfwm4" "$maybecolourisedtheme/colouriser-theme-settings" "$maybecolourisedtheme/index.theme" "$maybecolourisedtheme/theme-colouriser-colour" "$maybecolourisedtheme/theme-colouriser-type"
+                    if rmdir "$maybecolourisedtheme" 2> /dev/null; then
+                        rm -rf "$maybecolourisedtheme"
+                    fi
+                fi
+            done
+        fi
+    done
+    
+    echo "2p7" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    exit 0
+fi
+
+if [ "$1" = "minttransition2p8" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p7" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Remove the Feren OS Repositories
+    rm -f /etc/apt/sources.list.d/feren-os.list /etc/apt/sources.list.d/feren-os-neon.list
+    
+    #Downgrade Feren OS patched packages
+    apt update
+    echo "Package: *
+Pin: release a=*-backports
+Pin-Priority: 100
+
+Package: *
+Pin: release n=*
+Pin-Priority: 1001" > /tmp/apt-downgrade-task
+    /usr/bin/apt-get -o Dpkg::Options::="--force-all" -o Dir::Etc::Preferences=/tmp/apt-downgrade-task dist-upgrade -y --allow-downgrades
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    rm -f /tmp/apt-downgrade-task
+    
+    #Turn the default Ubuntu repositories into Mint's format for them
+    echo "#/etc/apt/sources.list" > /etc/apt/sources.list
+    echo "# Do not edit this file manually, use Software Sources instead.
+
+deb http://packages.linuxmint.com tricia main upstream import backport #id:linuxmint_main
+
+deb http://archive.ubuntu.com/ubuntu bionic main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu bionic-updates main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu bionic-backports main restricted universe multiverse
+
+deb http://security.ubuntu.com/ubuntu/ bionic-security main restricted universe multiverse
+deb http://archive.canonical.com/ubuntu/ bionic partner" > /etc/apt/sources.list.d/official-package-repositories.list
+
+    #Remove Feren OS identifier
+    rm -f /etc/feren-os-base /usr/share/feren-themer/cinnamon/installed-packages
+    rm -rf /etc/feren-welcome /usr/share/feren-os
+    
+    #Replace shortcuts
+    cd /home
+    for username in *; do
+        if [ -d "$username" ] && id "$username" >/dev/null 2>&1; then
+            if [ ! -e "/home/$username/Desktop/feedback.desktop" ]; then
+                rm -f "/home/$username/Desktop/feedback.desktop"
+            fi
+            if [ -f "/home/$username/Desktop/budgie-welcome.desktop" ]; then
+                cp -f /usr/share/applications/mintwelcome.desktop "/home/$username/Desktop/budgie-welcome.desktop"
+                chown -h $username:$username "/home/$username/Desktop/budgie-welcome.desktop"
+            fi
+            if [ ! -e "/home/$username/Pictures/Sample Pictures" ]; then
+                rm -f "/home/$username/Pictures/Sample Pictures"
+            fi
+        fi
+    done
+    if [ ! -e "/etc/skel/Pictures/Sample Pictures" ]; then
+        rm -f "/etc/skel/Pictures/Sample Pictures"
+    fi
+    
+    #Turn the Mint theme into a resetting theme
+    echo "[THEMER THEME]
+Name=Linux Mint
+Applets=
+Extensions=
+Conky=False
+WMFont=Ubuntu Medium 10
+CursorTheme=DMZ-White
+LogoColour=White
+WMLayout=:minimize,maximize,close
+Panels=['1:0:bottom']
+PanelSizes=['1:40', '2:40']
+PanelIconSizes=
+Dock=False
+FilesStyle=Mint" > '/usr/share/feren-themer/cinnamon/themes/Linux Mint/details'
+
+    echo "2p8" > /etc/feren-os-temp/mint-transition-progress
+    
+    #Refresh APT
+    apt update
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Step 2 is done
+    exit 0
+fi
+
+if [ "$1" = "minttransition3" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "2p8" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Install EVERYTHING included in Linux Mint by default
+    apt install -y --allow-downgrades file-roller gnome-calculator gucharmap gnome-disk-utility xreader gnote xviewer apturl drawing firefox gnome-system-monitor gufw hexchat celluloid mintbackup mintdrivers mintinstall mintlocale mintreport mintsources mintstick mintupdate mintwelcome nemo onboard openjdk-11-jre gnome-calendar thunderbird baobab gnome-terminal seahorse gnome-font-viewer gnome-screenshot pix qt5ct gnome-power-manager gnome-logs redshift-gtk rhythmbox simple-scan synaptic timeshift transmission-gtk yelp nemo-emblems nemo-fileroller nemo-preview nemo-share linuxmint-keyring mintmenu
+    if [ ! $? -eq 0 ]; then exit 1; fi
+    
+    
+    #Ask the user if they want to remove the Feren OS application set
+    zenity --question --title="Linux Mint" --text="Feren OS has automatically installed the default applications that are typically in Linux Mint.
+Would you like the applications included in Feren OS to be removed?
+
+Saying yes will remove the following, so be careful:
+- GNOME Clocks
+- GNOME Maps
+- Xpad
+- Document Viewer (Evince)
+- Krita
+- Geary
+- VLC Media Player
+- dconf Editor" --no-wrap
+    if [ $? -eq 0 ]; then
+        apt purge -y gnome-clocks gnome-maps xpad evince krita geary vlc dconf-editor
+        if [ ! $? -eq 0 ]; then exit 1; fi
+    fi
+    
+    systemctl disable finish-mint-transition.service
+    rm -f /lib/systemd/system/finish-mint-transition.service
+    
+    echo "3" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Step 3 is done
+    exit 0
+fi
+
+if [ "$1" = "minttransition4" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "3" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+
+    #Install mintupgrade
+    apt install mintupgrade -y --allow-downgrades
+    
+    echo "4" > /etc/feren-os-temp/mint-transition-progress
+    
+    chmod +x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    #Step 4 is done
+    exit 0
+fi
+
+if [ "$1" = "minttransition5" ]; then
+    if [ ! "$(cat /etc/feren-os-temp/mint-transition-progress)" = "4" ]; then
+        #This step must've already been done - skip
+        exit 0
+    fi
+    exec 1>/tmp/feren-majorupdate-linuxmint-transition-log 2>&1
+    
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    sleep 1
+    
+    #No longer need this
+    rm -f /usr/share/polkit-1/actions/org.feren.major-update.upgrade.policy
+    
+    #Final cleanup
+    rm -f /usr/bin/feren-terminal-launcher-temporary
+    apt purge feren-majorupdate-handler -y
+
+    rm -f /etc/feren-os-temp/mint-transition-progress /etc/feren-majorupdate-underway /etc/xdg/autostart/feren-majorupdate.desktop
+    rm -rf /etc/feren-os-temp/
+    
+    #Trick mintupgrade into thinking Timeshift is configured, if it isn't configured, to allow an upgrade
+    if [ ! -f /etc/timeshift.json ]; then
+        touch /etc/timeshift.json
+        #Add a systemd service for now to get rid of this faker on next boot
+        echo "[Unit]
+Description=Remove fake Timeshift configuration
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/bin/rm -f /etc/timeshift.json /lib/systemd/system/remove-fake-timeshiftjson.service'
+TimeoutSec=infinity
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target" > /lib/systemd/system/remove-fake-timeshiftjson.service
+        systemctl enable remove-fake-timeshiftjson.service
+    fi
+    
+    #Step 5 is done
+    exit 0
+fi
+
+if [ "$1" = "minttransitionupgruserland" ]; then
+    echo "[ Feren OS Major Updater ]
+We're currently preparing mintupgrade, to upgrade Linux Mint 19.3 to Linux Mint 20.0. Please do not close this Terminal window as it WILL abort the upgrade process.
+
+mintupgrade will be launched automatically when it is ready. Please wait..."; while [ ! -f /etc/timeshift.json ]; do sleep 2; done; clear; read -p "[ Feren OS Major Updater ]
+mintupgrade is ready to begin upgrading Linux Mint. When prompted, you should answer with 'y' (Yes) to do the upgrade.
+
+If it fails, you can visit this link in the future to upgrade Linux Mint manually from 19.3 to 20.0: https://linuxmint-user-guide.readthedocs.io/en/latest/upgrade-to-mint-20.html
+
+
+Tip: Your 'sudo password' is the same as the standard password you use to log into your user account.
+
+Press ENTER to continue. "; mintupgrade download && mintupgrade upgrade
+    if [ $? -eq 0 ]; then
+        exec 1>/dev/null 2>&1
+        zenity --info --title="Linux Mint" --text="The upgrade has been successfully completed. You are now running Linux Mint 20.0.
+
+You should now restart your computer to prevent any instability as the system gets accustomed to its new software.
+
+I am sorry to see you go, but it was always your choice whether you wanted to join the future of Feren OS or stick to Cinnamon.
+Regardless of that choice, I hope you'll enjoy your new Operating System. Thank you for using Feren OS Classic.
+- The Feren OS Developer
+
+Now restart Linux Mint already to finish the upgrade, please. If you need any help from now on, consult the Linux Mint Forums
+because you're now running Linux Mint after all.
+Finally, make sure to keep an eye on the Linux Mint Blog for future version upgrades." --no-wrap
+    else
+        exec 1>/dev/null 2>&1
+        zenity --error --title='Update unsuccessful' --text="We have successfully converted your Feren OS installation into Linux Mint 19.3, however the upgrade was aborted
+before it could begin or has failed. To upgrade to Linux Mint 20, do so manually via the official tutorial on Linux
+Mint's official website.
+
+To upgrade to Linux Mint 20 from 19.3, follow the official guide here:
+https://linuxmint-user-guide.readthedocs.io/en/latest/upgrade-to-mint-20.html
+
+I am sorry to see you go, but it was always your choice whether you wanted to join the future of Feren OS or stick
+to Cinnamon.
+Regardless of that choice, I hope you'll enjoy your new Operating System. Thank you for using Feren OS Classic.
+- The Feren OS Developer" --no-wrap
+    fi
+    
+    #The Linux Mint 20 transition upgrade path is done
+    killall feren-terminal-launcher-temporary
+fi
+
+#Feren Cinnamon to Plasma
+if [ "$1" = "ferencinn2plas" ]; then
+    chmod -x /usr/lib/feren-majorupdate/after-auth.sh
+    
+    exec 1>/tmp/feren-majorupdate-transition-log 2>&1
+    
+    #Make sure feren-cinn2plas is up-to-date in the first place
+    /usr/bin/apt install -y feren-cinn2plas feren-cinn2plas-backupandrestore
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    
+    #Backup user configurations
+    cd /home
+    for username in *; do
+        if [ -d "/home/$username" ] && id -u "$username"; then
+            if [ ! -d /home/$username/.feren ]; then
+                mkdir /home/$username/.feren
+            fi
+            icontheme=$(sudo -H -u $username bash -c 'gsettings get org.cinnamon.desktop.interface icon-theme')
+            icontheme=$(echo $icontheme | sed "s/^'\(.*\)'$/\1/")
+            echo "IconTheme=$icontheme" > /home/$username/.feren/cinnamon-config-data
+            cursortheme=$(sudo -H -u $username bash -c 'gsettings get org.cinnamon.desktop.interface cursor-theme')
+            cursortheme=$(echo $cursortheme | sed "s/^'\(.*\)'$/\1/")
+            echo "CursorTheme=$cursortheme" >> /home/$username/.feren/cinnamon-config-data
+            gtktheme=$(sudo -H -u $username bash -c 'gsettings get org.cinnamon.desktop.interface gtk-theme')
+            gtktheme=$(echo $gtktheme | sed "s/^'\(.*\)'$/\1/")
+            echo "GTKTheme=$gtktheme" >> /home/$username/.feren/cinnamon-config-data
+            themertheme=$(sudo -H -u $username bash -c 'gsettings get org.feren.feren-themer.cinnamon theme-name')
+            themertheme=$(echo $themertheme | sed "s/^'\(.*\)'$/\1/")
+            echo "ThemerTheme=$themertheme" >> /home/$username/.feren/cinnamon-config-data
+            wallpaper=$(sudo -H -u $username bash -c 'gsettings get org.cinnamon.desktop.background picture-uri')
+            wallpaper=$(echo $wallpaper | sed "s/^'\(.*\)'$/\1/")
+            echo "Wallpaper=$wallpaper" >> /home/$username/.feren/cinnamon-config-data
+            chown -h $username:$username /home/$username/.feren/cinnamon-config-data
+        fi
+    done
+    
+    cd
+    
+    if [ "$(/bin/cat /etc/feren-os-base)" = "bionic" ]; then
+        /usr/bin/apt install -y --install-recommends linux-generic-hwe-18.04 xserver-xorg-hwe-18.04
+        if [ ! $? -eq 0 ]; then
+            exit 1
+        fi
+    fi
+    /usr/bin/apt install -y xserver-xorg-input-wacom-hwe-18.04
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    /usr/bin/apt purge -y feren-oobe
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    /usr/bin/apt install -y feren-meta-plasma-core kdenetwork-filesharing frameworkintegration kde-cli-tools kde-config-gtk-style kde-config-screenlocker khotkeys kio kio-extras kscreen plasma-nm plasma-pa user-manager systemsettings plasma-workspace plasma-framework powerdevil polkit-kde-agent-1 policykit-desktop-privileges plasma-desktop bluedevil kwin kwin-addons print-manager kde-baseapps-bin appmenu-qt kdelibs-bin kdelibs5-data kdelibs5-plugins kde-cli-tools-data kde-config-screenlocker kgamma5 kio-audiocd kwin-data plasma-desktop-data powerdevil-data libkf5kdelibs4support5-bin kinfocenter phonon-backend-gstreamer feren-info-kde adwaita-icon-theme-full fonts-hack numlockx onboard gnome-themes-standard
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    /usr/bin/apt remove -y mintsystem ubuntu-system-adjustments
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    /usr/bin/apt install -y feren-meta-os-plasma-system feren-artwork lightdm slick-greeter feren-slick-config-plasma feren-icon-patches feren-plasma-startup-adjuster feren-plasma-vm-adjuster ureadahead lightdm-settings-feren-plasma ferenlocale-plasma feren-plasma-desktop feren-plasma-desktop-full feren-plasma-config-configs feren-plasma-config-patches feren-plasma-config-applications feren-patched-kcms feren-plasma-iconsapply feren-themer-plasma feren-theme-colouriser-plasma-feren nemo-plasma-integration feren-kde-applets plasma-layouts-feren-default feren-kde-colourschemes feren-kde-nemorouting feren-kde-settings feren-kde-theme-patches feren-oobe-kde feren-xsettings kvantum-themes-feren plasma-theme-feren feren-backgrounds fonts-open-sans fonts-dejavu latte-dock feren-latte-config feren-info-kde plasma-layouts-feren-cupertino plasma-layouts-feren-familiar-redmond plasma-layouts-feren-unity plasma-wallpapers-addons kdeconnect feren-appmenu-integration plasma-widgets-addons feren-plasma-vm-adjuster nemo-ark feren-app-packages-plasma vlc krita okular remmina remmina-plugin-rdp remmina-plugin-xdmcp remmina-plugin-vnc feren-welcome feren-themer-plasma feren-theme-colouriser feren-theme-colouriser-plasma-feren latte-dock kate simple-scan ark onboard kde-spectacle ksysguard konsole feren-store feren-maintenance feren-os-majorupdate gnome-keyring feren-os-plasma feren-cinn2plas-backupandrestore breeze-gtk-theme gtk3-engines-breeze kde-config-tablet plasma-browser-integration
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    
+    #Make sure feren-cinn2plas is up-to-date in the first place
+    /usr/bin/apt install -y feren-cinn2plas feren-cinn2plas-backupandrestore
+    if [ ! $? -eq 0 ]; then
+        exit 1
+    fi
+    
+    /bin/systemctl enable feren-cinn2plas-phase2.service
+
+    echo "standard" > /etc/feren-majorupdate-underway
+    sed -i '/Hidden=/c\Hidden=false' /etc/xdg/autostart/feren-majorupdate.desktop
+fi
+
+
+true

@@ -1,0 +1,500 @@
+#!/usr/bin/python3
+
+from __future__ import print_function
+
+import errno
+import getpass
+import grp
+import imp
+import os
+import pwd
+import signal
+import subprocess
+import sys
+import sysconfig
+import traceback
+import time
+
+import PAM
+
+
+logfile = None
+
+def log(msg):
+    print('oem-config-dm: ' + msg, file=logfile, flush=True)
+
+
+def _pam_conv(auth, query_list, userData):
+    resp = []
+    for query, type in query_list:
+        if type == PAM.PAM_PROMPT_ECHO_ON:
+            val = input(query)
+            resp.append((val, 0))
+        elif type == PAM.PAM_PROMPT_ECHO_OFF:
+            val = getpass.getpass(query)
+            resp.append((val, 0))
+        elif type in (PAM.PAM_PROMPT_ERROR_MSG, PAM.PAM_PROMPT_TEXT_INFO):
+            print(query)
+            resp.append(('', 0))
+        else:
+            return None
+    return resp
+
+
+class XStartupError(EnvironmentError):
+    pass
+
+
+class MissingProgramError(EnvironmentError):
+    pass
+
+
+class SignalWatcher:
+    def __init__(self, owner, program,
+                 interface, object_path,
+                 signal, expected):
+        self.owner = owner
+        self.program = program
+        self.connection = None
+        self.interface = interface
+        self.object_path = object_path
+        self.signal = signal
+        self.expected = expected
+        self.processes = []
+
+        from gi.repository import GLib, Gio
+        owner.drop_privileges()
+        self.loop = GLib.MainLoop()
+        Gio.bus_get(Gio.BusType.SESSION, None,
+                    self.on_got_bus, None)
+
+    def signal_timeout(self, user_data):
+        log("SignalWatcher: signal timed out, continuing with oem-config-dm")
+        self.loop.quit()
+
+    def on_got_bus(self, source, result, user_data):
+        try:
+            from gi.repository import GLib, Gio
+            self.connection = Gio.bus_get_finish(result)
+            self.connection.signal_subscribe(None, self.interface,
+                                             self.signal,
+                                             self.object_path, None,
+                                             Gio.DBusSignalFlags.NONE,
+                                             self.on_signal, None)
+            self.processes.append(subprocess.Popen(
+                                  [self.program],
+                                  stdin=None, stdout=logfile, stderr=logfile))
+            self.owner.regain_privileges()
+            GLib.timeout_add_seconds(5, self.signal_timeout, None)
+        except Exception:
+            log("failed to ensure xsettings plugin was started:")
+            log(traceback.format_exc())
+            self.loop.quit()
+
+    def on_signal(self, connection, sender, path, interface, signal, params,
+                  user_data):
+        (plugin, ) = params
+        # log ('on_signal: got %s' % plugin)
+        if plugin == "xsettings":
+            self.loop.quit()
+
+    def run(self):
+        self.loop.run()
+        return self.processes
+
+
+class DM:
+    def __init__(self, vt, display, default_username, shellcommand, windowmanager):
+        self.auth = PAM.pam()
+        self.vt = vt
+        self.display = display
+        self.server_started = False
+
+        self.username = default_username
+        self.shellcommand = shellcommand
+        self.windowmanager = windowmanager
+        try:
+            self.uid, self.gid = pwd.getpwnam(self.username)[2:4]
+        except KeyError:
+            import syslog
+            syslog.syslog('Could not find %s, falling back to root.' %
+                          self.username)
+            self.username = 'root'
+            self.uid, self.gid = 0, 0
+        self.homedir = pwd.getpwnam(self.username)[5]
+        self.uid = int(self.uid)
+        self.gid = int(self.gid)
+        self.groups = []
+        for g in grp.getgrall():
+            if self.username in g[3] or g[0] == self.username:
+                self.groups.append(g[2])
+
+    def sigusr1_handler(self, signum, frame):
+        self.server_started = True
+
+    def active_vt(self):
+        import fcntl
+        import array
+
+        console = os.open('/dev/tty0', os.O_RDONLY | os.O_NOCTTY)
+        try:
+            VT_GETSTATE = 0x5603
+            vt_stat = array.array('H', [0, 0, 0])
+            fcntl.ioctl(console, VT_GETSTATE, vt_stat)
+            return vt_stat[0]
+        finally:
+            os.close(console)
+
+    def drop_privileges(self):
+        os.setgroups(self.groups)
+        os.setresgid(self.gid, self.gid, 0)
+        os.setresuid(self.uid, self.uid, 0)
+
+    def regain_privileges(self):
+        os.setresuid(0, 0, 0)
+        os.setresgid(0, 0, 0)
+        os.setgroups([])
+
+    def server_preexec(self):
+        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+
+    def run_hooks(self, hookdir):
+        if os.path.isdir(hookdir):
+            # Exclude hooks containing '.', so that *.dpkg-* et al are avoided.
+            hooks = [entry for entry in os.listdir(hookdir)
+                     if '.' not in entry]
+            for hookentry in hooks:
+                hook = os.path.join(hookdir, hookentry)
+                subprocess.call(
+                    hook, stdout=logfile, stderr=logfile,
+                    preexec_fn=self.drop_privileges)
+
+    def pam_open_session(self):
+        self.auth.start('su')
+        self.auth.set_item(PAM.PAM_USER, self.username)
+        self.auth.set_item(PAM.PAM_CONV, _pam_conv)
+        self.auth.putenv('XDG_SESSION_CLASS=greeter')
+        self.auth.putenv('XDG_SEAT=seat0')
+        # at the time pam_open_session is called self.vt is the
+        # correct vt: either the one originally passed as cmd line
+        # arg or as determined by active_vt()
+        #
+        # self.vt is of the form str("vt10")
+        self.auth.putenv('XDG_VTNR=%s' % self.vt[2:])
+        self.auth.authenticate()
+        self.auth.open_session()
+        os.environ.update(
+            [i.split('=', 1) for i in self.auth.getenvlist()])
+
+    def pam_close_session(self):
+        if self.auth:
+            self.auth.close_session()
+            self.auth = None
+
+    def run(self, *program):
+
+        extras = []
+        null = open('/dev/null', 'w')
+        log('starting')
+
+        signal.signal(signal.SIGUSR1, self.sigusr1_handler)
+        signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+        signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+
+        servercommand = ['X', '-br', '-ac', '-noreset', '-nolisten', 'tcp']
+
+        log('plymouth')
+        try:
+            plymouth_running = subprocess.call(['plymouth', '--ping']) == 0
+        except OSError:
+            plymouth_running = False
+        if plymouth_running:
+            #Get rid of Plymouth, clear the screen of verbose boot, and print out a string letting the user know the OS is working on stuff and hasn't crashed or anything - if we didn't kill Plymouth here Plymouth would freeze until the user's graphical session is up (when it'd then be replaced with that graphical session entirely)
+            subprocess.call(['plymouth', 'deactivate'])
+            subprocess.call(['plymouth', 'quit'])
+            subprocess.call('clear',shell=True)
+            print("Preparing Feren OS for the first boot... please wait")
+            #if subprocess.call(['plymouth', '--has-active-vt']) == 0:
+                #self.vt = 'vt%d' % self.active_vt()
+                #servercommand.extend(['-background', 'none'])
+            #else:
+                #subprocess.call(['plymouth', 'quit'])
+                #plymouth_running = False
+
+        servercommand.extend([self.vt, self.display])
+
+        log('start X {}'.format(servercommand))
+        for attempt in ('main', 'fbdev', 'vesa'):
+            command = list(servercommand)
+            if attempt == 'main':
+                continue
+
+            server = subprocess.Popen(
+                command, stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.server_preexec)
+
+            # Really we should select on a pipe or something, but it's not
+            # worth the effort for now.
+            try:
+                timeout = 60
+                while not self.server_started:
+                    status = server.poll()
+                    if type(status) is int and status != 0:
+                        if plymouth_running:
+                            subprocess.call(['plymouth', 'quit'])
+                        raise XStartupError('X server exited with return '
+                                            'code ' + str(status))
+                    if timeout == 0:
+                        if plymouth_running:
+                            subprocess.call(['plymouth', 'quit'])
+                        raise XStartupError('X server failed to start after 60'
+                                            ' seconds')
+                    time.sleep(1)
+                    timeout -= 1
+                if plymouth_running:
+                    subprocess.call(['plymouth', 'quit', '--retain-splash'])
+            except XStartupError:
+                if attempt == 'vesa':
+                    raise
+
+            if self.server_started:
+                break
+
+        log('set vars')
+        os.environ['DISPLAY'] = self.display
+        os.environ['HOME'] = self.homedir
+        # Give ubiquity a UID and GID that it can drop privileges to.
+        os.environ['PKEXEC_UID'] = str(self.uid)
+        os.environ['GVFS_DISABLE_FUSE'] = '1'
+
+        log('pam_open_session')
+        self.pam_open_session()
+
+        # Session bus, apparently needed by most interfaces now
+        if ('DBUS_SESSION_BUS_ADDRESS' not in os.environ and
+                os.path.isfile('/usr/bin/dbus-launch')):
+            log('dbus')
+            dbus_subp = subprocess.Popen(
+                ['dbus-launch', '--exit-with-session'],
+                stdin=null, stdout=subprocess.PIPE, stderr=logfile,
+                preexec_fn=self.drop_privileges, universal_newlines=True)
+            for line in dbus_subp.stdout:
+                try:
+                    name, value = line.rstrip('\n').split('=', 1)
+                    os.environ[name] = value
+                except ValueError:
+                    pass
+            dbus_subp.stdout.close()
+            dbus_subp.wait()
+
+        # dconf writer
+        if os.path.exists("/usr/lib/dconf/dconf-service"):
+            log('dconf-service')
+            extras.append(subprocess.Popen(
+                ['/usr/lib/dconf/dconf-service'],
+                stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.drop_privileges))
+
+        # Accessibility infrastructure
+        proc_cmdline = []
+        with open('/proc/cmdline', 'r') as fp:
+            proc_cmdline = fp.readline().split()
+
+        log('starting oem config frontend')
+        if os.path.isfile('/usr/bin/plasmashell'):
+            # Force Qt5 KDE theming to load for kwin and friends.
+            os.environ["QT_QPA_PLATFORMTHEME"] = "kde"
+        if not os.path.isfile('/usr/bin/plasmashell') and os.path.isfile('/usr/bin/cinnamon'):
+            # Force Cinnamon theme engine to load for Calamares gtk2 QStyle themeing.
+            extras.append(subprocess.Popen(
+               '/usr/lib/x86_64-linux-gnu/cinnamon-settings-daemon/csd-xsettings',
+                stdin=null, stdout=subprocess.PIPE, stderr=logfile,
+                preexec_fn=self.drop_privileges, universal_newlines=True))
+            time.sleep(2)
+            #Sleeping 2 seconds means Calamares can't start too early, as if it starts too early it'll use the fallback GTK2 theme in the gtk2 QStyle
+        
+        # Session bus, apparently needed by most interfaces now
+        #This second running of it is because it doesn't seem to last on the first run for Plasmashell to be able to use it to function
+        if self.shellcommand == "/usr/bin/plasmashell" and ('DBUS_SESSION_BUS_ADDRESS' not in os.environ and
+                os.path.isfile('/usr/bin/dbus-launch')):
+            log('dbus')
+            dbus_subp = subprocess.Popen(
+                ['dbus-launch', '--exit-with-session'],
+                stdin=null, stdout=subprocess.PIPE, stderr=logfile,
+                preexec_fn=self.drop_privileges, universal_newlines=True)
+            for line in dbus_subp.stdout:
+                try:
+                    name, value = line.rstrip('\n').split('=', 1)
+                    os.environ[name] = value
+                except ValueError:
+                    pass
+            dbus_subp.stdout.close()
+            dbus_subp.wait()
+        
+        if not self.shellcommand == "/usr/bin/plasmashell" and 'access=v1' not in proc_cmdline:
+            #Paint a background manually for non-Plasma OEM Setups via the Qt Background Painting program from ubiquity-dm
+            #NOTE: Don't even bother trying to run this in a session where you ran this DM program while the OS is fully booted up - I tried that and the background just becomes white - every other scenario, including use of this DM program as it's intended to be used, has the background entirely correctly painted
+            log('paint background')
+            extras.append(subprocess.Popen(
+               ['oem-config-setbg', '/usr/share/feren-os/images/login'],
+               stdin=null, stdout=logfile, stderr=logfile))
+        
+        log('start window manager')
+        if os.path.isfile(self.windowmanager):
+            wm_cmd = [self.windowmanager]
+        wmproc = subprocess.Popen(
+            wm_cmd, stdin=null, stdout=logfile, stderr=logfile,
+            preexec_fn=self.drop_privileges)
+            
+        if self.shellcommand: #Returns False only if the variable = ""
+            log('start setup shell')
+            if self.shellcommand == "/usr/bin/plasmashell" and os.path.exists("/usr/lib/x86_64-linux-gnu/libexec/kactivitymanagerd"):
+                #Only running kactivitymanagerd because it's also required by Plasmashell to function
+                subprocess.Popen(
+                    "/usr/lib/x86_64-linux-gnu/libexec/kactivitymanagerd", stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.drop_privileges)
+            #Start Feren OS's Onboard Implementation into Plasma for the OEM Config Plasmashell instance
+            if self.shellcommand == "/usr/bin/plasmashell" and os.path.exists("/usr/bin/feren-launch-onboard"):
+                subprocess.Popen(
+                    "/usr/bin/feren-launch-onboard", stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.drop_privileges)
+            if os.path.isfile(self.shellcommand):
+                #Now to start the DE itself
+                de_cmd = [self.shellcommand]
+            deproc = subprocess.Popen(
+                de_cmd, stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.drop_privileges)
+
+            # powerdevil - if the DE is Plasmashell - this is only here because I put Battery and Brightness on the panel
+            if self.shellcommand == "/usr/bin/plasmashell" and os.path.exists("/usr/lib/x86_64-linux-gnu/libexec/org_kde_powerdevil"):
+                log('start powerdevil')
+                extras.append(subprocess.Popen(
+                    ['/usr/lib/x86_64-linux-gnu/libexec/org_kde_powerdevil'],
+                    stdin=null, stdout=logfile, stderr=logfile,
+                    preexec_fn=self.drop_privileges))
+        #Onboard instance, mainly for touch-only devices, on OEM Configs that don't use Plasmashell
+        if not self.shellcommand == "/usr/bin/plasmashell" and os.path.exists("/usr/bin/onboard"):
+            log('start onboard')
+            extras.append(subprocess.Popen(
+                ['/usr/bin/onboard'],
+                stdin=null, stdout=logfile, stderr=logfile,
+                preexec_fn=self.drop_privileges))
+
+        log('start greeter')
+        #Start Calamares itself - CBA to move the code from that simple bash script over to this chunk of code to give it its different QStyle choices, to here ya go instead.
+        greeter = subprocess.Popen(
+            "/usr/bin/feren-oem-calamares", stdin=null, stdout=logfile, stderr=logfile)
+        ret = greeter.wait()
+        log('greeter exited with code {}'.format(ret))
+        
+        #ret = greeter.wait() means the code will only advance once Calamares is closed (by both Cancelling or a successful Setup)
+
+        def kill_if_exists(pid, signum):
+            try:
+                os.kill(pid, signum)
+            except OSError as e:
+                if e.errno != errno.ESRCH:
+                    raise
+
+        def sigalrm_handler(signum, frame):
+            kill_if_exists(wm.pid, signal.SIGKILL)
+            for extra in extras:
+                kill_if_exists(extra.pid, signal.SIGKILL)
+
+        #Kill Every Process we just ran to make the 'logout' process a little more clean
+        kill_if_exists(wmproc.pid, signal.SIGTERM)
+        if self.shellcommand:
+            kill_if_exists(deproc.pid, signal.SIGTERM)
+        for extra in extras:
+            kill_if_exists(extra.pid, signal.SIGTERM)
+        signal.signal(signal.SIGALRM, sigalrm_handler)
+        signal.alarm(1)  # low patience with WMs failing to exit on demand
+        processes = set(extras)
+        while processes:
+            done = set()
+            for process in processes:
+                try:
+                    process.wait()
+                    done.add(process)
+                except OSError as e:
+                    if e.errno == errno.EINTR:
+                        continue
+                    raise
+            processes -= done
+        signal.alarm(0)
+
+        # Clear the console so we don't see boot-time messages on switch
+        try:
+            subprocess.call('clear',shell=True)
+            with open('/dev/tty' + self.vt[2:], 'r+') as vthandle:
+                subprocess.call(['clear'], stdin=vthandle, stdout=vthandle)
+        except IOError:
+            pass
+
+        kill_if_exists(server.pid, signal.SIGTERM)
+        server.wait()
+
+        null.close()
+        
+        
+        if ret is not None and ret >= 0:
+            return ret
+        else:
+            return 1
+
+
+def run(vt, display, username, shellcommand, windowmanager):
+    try:
+        dm = DM(vt, display, username, shellcommand, windowmanager)
+    except XStartupError:
+        log("XStartupError")
+        return 1
+    ret = dm.run(*sys.argv[4:])
+    dm.pam_close_session()
+    return ret
+
+
+def main():
+    global logfile
+
+    if len(sys.argv) < 4:
+        sys.stderr.write('Usage: %s <vt[1-N]> <:[0-N]> <username> <program> '
+                         '[<arguments>]\n' % sys.argv[0])
+        return 1
+    vt, display, username = sys.argv[1:4]
+    
+    #Decide on the DE to use (optionally) in this environment
+    if os.path.isfile('/usr/bin/plasmashell'):
+        shellcommand = "/usr/bin/plasmashell"
+        #Use tightly restricted Plasmashell in Feren OS
+    else:
+        shellcommand = ""
+        #No desktop shell is used in non-Plasma Feren OS
+    #Decide on the Window Manager to use in this environment
+    if os.path.isfile('/usr/bin/kwin'):
+        windowmanager = "/usr/bin/kwin"
+        #Use KWin for Feren OS OEM Config
+    elif os.path.isfile('/usr/bin/metacity'):
+        windowmanager = "/usr/bin/metacity"
+        #Use Metacity for Feren OS Classic OEM Config
+    else:
+        windowmanager = "/usr/bin/x-window-manager"
+        #Fall back to default window manager if neither WMs are found
+
+    try:
+        os.makedirs('/var/log/installer')
+    except OSError as e:
+        # be happy if someone already created the path
+        if e.errno != errno.EEXIST:
+            raise
+    logfile = open('/var/log/installer/dm', 'w')
+    try:
+        run(vt, display, username, shellcommand, windowmanager)
+    except Exception:
+        log('Failed with an exception:')
+        log(traceback.format_exc())
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

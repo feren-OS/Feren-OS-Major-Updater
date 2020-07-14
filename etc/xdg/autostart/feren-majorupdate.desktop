@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Feren OS Major Updater
+Comment=Tool to perform major updates on your Feren OS machine
+Keywords=system;update;major;feren
+Icon=system-upgrade
+Exec=/usr/bin/feren-majorupdate-gui
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=GNOME;GTK;System;
+Hidden=true

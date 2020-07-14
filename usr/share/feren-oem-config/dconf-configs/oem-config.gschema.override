@@ -1,0 +1,9 @@
+[org.cinnamon.muffin]
+button-layout=":maximize"
+
+[org.gnome.desktop.wm.preferences]
+button-layout=":maximize"
+num-workspaces=1
+
+[org.onboard.lockdown]
+disable-preferences=true

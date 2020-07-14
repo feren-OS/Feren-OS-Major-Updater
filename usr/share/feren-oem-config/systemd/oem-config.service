@@ -1,0 +1,25 @@
+[Unit]
+Description=End-user configuration after initial OEM installation
+ConditionPathExists=/dev/tty1
+Before=apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service
+Wants=systemd-networkd-wait-online.service feren-autopackagemgmt.service
+
+# We never want to run the oem-config job in the live environment (as is the
+# case in some custom configurations) or in recovery mode.
+ConditionKernelCommandLine=!boot=casper
+ConditionKernelCommandLine=!single
+ConditionKernelCommandLine=!rescue
+ConditionKernelCommandLine=!emergency
+
+[Service]
+Type=oneshot
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/usr/bin/oem-config-firstboot
+
+[Install]
+WantedBy=oem-config.target

@@ -1,0 +1,41 @@
+#!/bin/bash
+
+#/usr/bin/killall feren-latte-launch latte-dock plasmashell
+
+#Revert restrictions
+#Remove all the restrictions and OEM Setup customisations
+rm -f /etc/dconf/db/local.d/locks/00_oemsetup-locks /usr/share/glib-2.0/schemas/oem-config.gschema.override /etc/dconf/profile/user /usr/local/sbin/kcmshell5 /etc/xdg/kdeglobals /etc/xdg/kded5rc /etc/xdg/khotkeysrc /etc/xdg/kglobalshortcutsrc /root/.config/kdeglobals
+#Update DCONF
+dconf update
+#Recompile gsettings/DCONF schemas
+glib-compile-schemas /usr/share/glib-2.0/schemas
+#Plasma stuff
+#Restore the kdeglobals file - Plasma
+if [ -f /etc/feren-kdeglobals-backup ]; then
+    mv -f /etc/feren-kdeglobals-backup /etc/xdg/kdeglobals
+fi
+#Restore the kded5rc file - Plasma
+if [ -f /etc/feren-kded5rc-backup ]; then
+    mv -f /etc/feren-kded5rc-backup /etc/xdg/kded5rc
+fi
+#Restore the khoykeysrc file - Plasma
+if [ -f /etc/feren-khotkeysrc-backup ]; then
+    mv -f /etc/feren-khotkeysrc-backup /etc/xdg/khotkeysrc
+fi
+#Restore the kglobalshortcutsrc file - Plasma
+if [ -f /etc/feren-kglobalshortcutsrc-backup ]; then
+    mv -f /etc/feren-kglobalshortcutsrc-backup /etc/xdg/kglobalshortcutsrc
+fi
+#Restore the root kdeglobals file - Plasma
+if [ -f /root/.config/kdeglobals-backup ]; then
+    mv -f /root/.config/kdeglobals-backup /root/.config/kdeglobals
+fi
+#Make sure the system language is properly set
+#/usr/bin/feren-languagesetter - Forget it, it causes the language to not be set properly
+#Remove the installer, etc.
+dpkg --purge calamares feren-calamares-languagesetter calamares-branding-feren oem-config-feren calamares-settings-ubuntu-common feren-calamares-global-settings
+
+#Add a marker for feren-oem-session to indicate a successful install - REQUIRED otherwise it won't realise the setup process is finished and will shut down the system instead when Calamares exits
+touch /tmp/feren-oem-setup-complete
+#Exit with Code 0
+exit 0
